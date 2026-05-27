@@ -69,6 +69,15 @@ const shopItemSchema = new mongoose.Schema({
   }
 });
 
+const sellPriceSchema = new mongoose.Schema({
+  itemType: String,
+  price: Number,
+  enabled: {
+    type: Boolean,
+    default: true
+  }
+});
+
 /*
 ========================
 MODELS
@@ -79,25 +88,22 @@ const Player = mongoose.model("Player", playerSchema);
 const PendingSell = mongoose.model("PendingSell", pendingSellSchema);
 const PendingBuy = mongoose.model("PendingBuy", pendingBuySchema);
 const ShopItem = mongoose.model("ShopItem", shopItemSchema);
+const SellPrice = mongoose.model("SellPrice", sellPriceSchema);
 
 /*
 ========================
-SELL PRICES
+SELL PRICE LOOKUP
 ========================
 */
 
-const sellPrices = {
-  DIAMOND: 100,
-  EMERALD: 75,
-  GOLD_INGOT: 25,
-  IRON_INGOT: 10,
-  COAL: 3,
-  REDSTONE: 4,
-  LAPIS_LAZULI: 5
-};
+async function getSellPrice(type) {
 
-function getSellPrice(type) {
-  return sellPrices[type] || 1;
+  const item = await SellPrice.findOne({
+    itemType: type,
+    enabled: true
+  });
+
+  return item ? item.price : 1;
 }
 
 /*
@@ -123,11 +129,6 @@ async function seedShopIfEmpty() {
     {
       itemType: "EMERALD",
       price: 75,
-      enabled: true
-    },
-    {
-      itemType: "GOLD_INGOT",
-      price: 25,
       enabled: true
     }
   ]);
@@ -189,8 +190,7 @@ app.post("/api/inventory", async (req, res) => {
     });
 
     res.json({
-      success: true,
-      message: "Inventory saved"
+      success: true
     });
 
   } catch (err) {
@@ -214,8 +214,7 @@ app.get("/api/inventory/:name", async (req, res) => {
     if (!player) {
 
       return res.status(404).json({
-        success: false,
-        error: "Player not found"
+        success: false
       });
     }
 
@@ -223,8 +222,7 @@ app.get("/api/inventory/:name", async (req, res) => {
       uuid: player.uuid,
       name: player.name,
       inventory: player.inventory,
-      balance: player.balance,
-      prices: sellPrices
+      balance: player.balance
     });
 
   } catch (err) {
@@ -239,7 +237,7 @@ app.get("/api/inventory/:name", async (req, res) => {
 
 /*
 ========================
-SHOP
+SHOP ROUTES
 ========================
 */
 
@@ -252,12 +250,6 @@ app.get("/api/shop", async (req, res) => {
   res.json(items);
 });
 
-/*
-========================
-ADMIN SHOP
-========================
-*/
-
 app.get("/api/admin/shop", async (req, res) => {
 
   const items = await ShopItem.find();
@@ -267,12 +259,7 @@ app.get("/api/admin/shop", async (req, res) => {
 
 app.post("/api/admin/shop", async (req, res) => {
 
-  const {
-    itemType,
-    price,
-    iconUrl,
-    enabled
-  } = req.body;
+  const { itemType, price, iconUrl, enabled } = req.body;
 
   const item = new ShopItem({
     itemType: itemType.toUpperCase(),
@@ -283,7 +270,7 @@ app.post("/api/admin/shop", async (req, res) => {
 
   await item.save();
 
-  io.emit("shopUpdate");
+  io.emit("shopUpdated");
 
   res.json({
     success: true,
@@ -293,12 +280,7 @@ app.post("/api/admin/shop", async (req, res) => {
 
 app.put("/api/admin/shop/:id", async (req, res) => {
 
-  const {
-    itemType,
-    price,
-    iconUrl,
-    enabled
-  } = req.body;
+  const { itemType, price, iconUrl, enabled } = req.body;
 
   const item = await ShopItem.findByIdAndUpdate(
     req.params.id,
@@ -308,12 +290,10 @@ app.put("/api/admin/shop/:id", async (req, res) => {
       iconUrl,
       enabled
     },
-    {
-      new: true
-    }
+    { new: true }
   );
 
-  io.emit("shopUpdate");
+  io.emit("shopUpdated");
 
   res.json({
     success: true,
@@ -325,7 +305,87 @@ app.delete("/api/admin/shop/:id", async (req, res) => {
 
   await ShopItem.findByIdAndDelete(req.params.id);
 
-  io.emit("shopUpdate");
+  io.emit("shopUpdated");
+
+  res.json({
+    success: true
+  });
+});
+
+/*
+========================
+SELL PRICE ADMIN
+========================
+*/
+
+app.get("/api/admin/sell-prices", async (req, res) => {
+
+  const items = await SellPrice.find();
+
+  res.json(items);
+});
+
+app.post("/api/admin/sell-prices", async (req, res) => {
+
+  const { itemType, price, enabled } = req.body;
+
+  const cleanType = itemType.toUpperCase();
+
+  let item = await SellPrice.findOne({
+    itemType: cleanType
+  });
+
+  if (item) {
+
+    item.price = Number(price);
+    item.enabled = enabled !== false;
+
+  } else {
+
+    item = new SellPrice({
+      itemType: cleanType,
+      price: Number(price),
+      enabled: enabled !== false
+    });
+  }
+
+  await item.save();
+
+  io.emit("sellPricesUpdated");
+
+  res.json({
+    success: true,
+    item
+  });
+});
+
+app.put("/api/admin/sell-prices/:id", async (req, res) => {
+
+  const { itemType, price, enabled } = req.body;
+
+  const item = await SellPrice.findByIdAndUpdate(
+    req.params.id,
+    {
+      itemType: itemType.toUpperCase(),
+      price: Number(price),
+      enabled
+    },
+    { new: true }
+  );
+
+  io.emit("sellPricesUpdated");
+
+  res.json({
+    success: true,
+    item
+  });
+});
+
+app.delete("/api/admin/sell-prices/:id", async (req, res) => {
+
+  await SellPrice.findByIdAndDelete(req.params.id);
+
+  io.emit("sellPricesUpdated");
 
   res.json({
     success: true
@@ -340,28 +400,24 @@ SELL SYSTEM
 
 app.post("/api/sell", async (req, res) => {
 
-  const {
-    name,
-    slot,
-    amount
-  } = req.body;
+  const { name, slot, amount } = req.body;
 
   const id =
-    Date.now().toString()
-    + Math.floor(Math.random() * 9999);
+    Date.now().toString() + Math.floor(Math.random() * 9999);
 
   const sellRequest = new PendingSell({
     id,
     name,
-    slot,
-    amount,
+    slot: Number(slot),
+    amount: Number(amount),
     status: "PENDING"
   });
 
   await sellRequest.save();
 
   res.json({
-    success: true
+    success: true,
+    id
   });
 });
 
@@ -383,13 +439,7 @@ app.get("/api/pending-sells/:name", async (req, res) => {
 
 app.post("/api/complete-sell", async (req, res) => {
 
-  const {
-    id,
-    name,
-    success,
-    itemType,
-    amount
-  } = req.body;
+  const { id, name, success, itemType, amount } = req.body;
 
   const request = await PendingSell.findOne({
     id
@@ -414,8 +464,8 @@ app.post("/api/complete-sell", async (req, res) => {
   }
 
   const total =
-    getSellPrice(itemType)
-    * Number(amount || 0);
+    (await getSellPrice(itemType))
+      * Number(amount || 0);
 
   const player = await Player.findOne({
     name
@@ -425,14 +475,14 @@ app.post("/api/complete-sell", async (req, res) => {
 
   await player.save();
 
-  request.status = "COMPLETE";
-
-  await request.save();
-
   io.emit("balanceUpdate", {
     name: player.name,
     balance: player.balance
   });
+
+  request.status = "COMPLETE";
+
+  await request.save();
 
   res.json({
     success: true,
@@ -449,11 +499,7 @@ BUY SYSTEM
 
 app.post("/api/buy", async (req, res) => {
 
-  const {
-    name,
-    itemType,
-    amount
-  } = req.body;
+  const { name, itemType, amount } = req.body;
 
   const buyAmount = Number(amount);
 
@@ -465,8 +511,7 @@ app.post("/api/buy", async (req, res) => {
   if (!shopItem) {
 
     return res.status(400).json({
-      success: false,
-      error: "Invalid item"
+      success: false
     });
   }
 
@@ -477,8 +522,7 @@ app.post("/api/buy", async (req, res) => {
   if (!player) {
 
     return res.status(404).json({
-      success: false,
-      error: "Player not found"
+      success: false
     });
   }
 
@@ -503,8 +547,7 @@ app.post("/api/buy", async (req, res) => {
   });
 
   const id =
-    Date.now().toString()
-    + Math.floor(Math.random() * 9999);
+    Date.now().toString() + Math.floor(Math.random() * 9999);
 
   const buyRequest = new PendingBuy({
     id,
@@ -540,10 +583,7 @@ app.get("/api/pending-buys/:name", async (req, res) => {
 
 app.post("/api/complete-buy", async (req, res) => {
 
-  const {
-    id,
-    success
-  } = req.body;
+  const { id, success } = req.body;
 
   const request = await PendingBuy.findOne({
     id
@@ -556,28 +596,23 @@ app.post("/api/complete-buy", async (req, res) => {
     });
   }
 
-  request.status =
-    success ? "COMPLETE" : "FAILED";
+  if (!success) {
+
+    request.status = "FAILED";
+
+    await request.save();
+
+    return res.json({
+      success: true
+    });
+  }
+
+  request.status = "COMPLETE";
 
   await request.save();
 
   res.json({
     success: true
-  });
-});
-
-/*
-========================
-SOCKET CONNECTION
-========================
-*/
-
-io.on("connection", (socket) => {
-
-  console.log("Client connected");
-
-  socket.on("disconnect", () => {
-    console.log("Client disconnected");
   });
 });
 
