@@ -2,20 +2,44 @@ const express = require("express");
 const cors = require("cors");
 const mongoose = require("mongoose");
 
+const http = require("http");
+const { Server } = require("socket.io");
+
 const app = express();
+
+const server = http.createServer(app);
+
+const io = new Server(server, {
+  cors: {
+    origin: "*"
+  }
+});
 
 app.use(cors());
 app.use(express.json());
 
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("Connected to MongoDB"))
-  .catch(err => console.error("MongoDB connection error:", err));
+  .then(() => {
+    console.log("Connected to MongoDB");
+  })
+  .catch(err => {
+    console.error("MongoDB connection error:", err);
+  });
+
+/*
+========================
+SCHEMAS
+========================
+*/
 
 const playerSchema = new mongoose.Schema({
   uuid: String,
   name: String,
   inventory: Array,
-  balance: { type: Number, default: 0 }
+  balance: {
+    type: Number,
+    default: 0
+  }
 });
 
 const pendingSellSchema = new mongoose.Schema({
@@ -39,13 +63,28 @@ const shopItemSchema = new mongoose.Schema({
   itemType: String,
   price: Number,
   iconUrl: String,
-  enabled: { type: Boolean, default: true }
+  enabled: {
+    type: Boolean,
+    default: true
+  }
 });
+
+/*
+========================
+MODELS
+========================
+*/
 
 const Player = mongoose.model("Player", playerSchema);
 const PendingSell = mongoose.model("PendingSell", pendingSellSchema);
 const PendingBuy = mongoose.model("PendingBuy", pendingBuySchema);
 const ShopItem = mongoose.model("ShopItem", shopItemSchema);
+
+/*
+========================
+SELL PRICES
+========================
+*/
 
 const sellPrices = {
   DIAMOND: 100,
@@ -61,17 +100,36 @@ function getSellPrice(type) {
   return sellPrices[type] || 1;
 }
 
+/*
+========================
+DEFAULT SHOP ITEMS
+========================
+*/
+
 async function seedShopIfEmpty() {
+
   const count = await ShopItem.countDocuments();
 
-  if (count > 0) return;
+  if (count > 0) {
+    return;
+  }
 
   await ShopItem.insertMany([
-    { itemType: "DIAMOND", price: 100, iconUrl: "", enabled: true },
-    { itemType: "EMERALD", price: 75, iconUrl: "", enabled: true },
-    { itemType: "GOLD_INGOT", price: 25, iconUrl: "", enabled: true },
-    { itemType: "IRON_INGOT", price: 10, iconUrl: "", enabled: true },
-    { itemType: "COAL", price: 3, iconUrl: "", enabled: true }
+    {
+      itemType: "DIAMOND",
+      price: 100,
+      enabled: true
+    },
+    {
+      itemType: "EMERALD",
+      price: 75,
+      enabled: true
+    },
+    {
+      itemType: "GOLD_INGOT",
+      price: 25,
+      enabled: true
+    }
   ]);
 
   console.log("Default shop items created");
@@ -81,341 +139,456 @@ mongoose.connection.once("open", () => {
   seedShopIfEmpty().catch(console.error);
 });
 
+/*
+========================
+ROOT
+========================
+*/
+
 app.get("/", (req, res) => {
   res.send("Inventory API is running.");
 });
 
+/*
+========================
+PLAYER INVENTORY
+========================
+*/
+
 app.post("/api/inventory", async (req, res) => {
+
   try {
+
     const data = req.body;
 
-    let player = await Player.findOne({ name: data.name });
+    let player = await Player.findOne({
+      name: data.name
+    });
 
     if (!player) {
+
       player = new Player({
         uuid: data.uuid,
         name: data.name,
         inventory: data.inventory,
         balance: 0
       });
+
     } else {
+
       player.uuid = data.uuid;
       player.inventory = data.inventory;
     }
 
     await player.save();
 
-    res.json({ success: true, message: "Inventory saved" });
+    io.emit("inventoryUpdate", {
+      name: player.name,
+      inventory: player.inventory,
+      balance: player.balance
+    });
+
+    res.json({
+      success: true,
+      message: "Inventory saved"
+    });
+
   } catch (err) {
+
     console.error(err);
-    res.status(500).json({ success: false, error: "Failed to save inventory" });
+
+    res.status(500).json({
+      success: false
+    });
   }
 });
 
 app.get("/api/inventory/:name", async (req, res) => {
+
   try {
-    const player = await Player.findOne({ name: req.params.name });
+
+    const player = await Player.findOne({
+      name: req.params.name
+    });
 
     if (!player) {
+
       return res.status(404).json({
         success: false,
         error: "Player not found"
       });
     }
-
-    const shopItems = await ShopItem.find({ enabled: true });
-    const iconMap = {};
-
-    shopItems.forEach(item => {
-      iconMap[item.itemType] = item.iconUrl || "";
-    });
 
     res.json({
       uuid: player.uuid,
       name: player.name,
       inventory: player.inventory,
       balance: player.balance,
-      prices: sellPrices,
-      icons: iconMap
+      prices: sellPrices
     });
+
   } catch (err) {
+
     console.error(err);
-    res.status(500).json({ success: false, error: "Database error" });
+
+    res.status(500).json({
+      success: false
+    });
   }
 });
+
+/*
+========================
+SHOP
+========================
+*/
 
 app.get("/api/shop", async (req, res) => {
-  try {
-    const items = await ShopItem.find({ enabled: true });
-    res.json(items);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Failed to load shop" });
-  }
+
+  const items = await ShopItem.find({
+    enabled: true
+  });
+
+  res.json(items);
 });
 
+/*
+========================
+ADMIN SHOP
+========================
+*/
+
 app.get("/api/admin/shop", async (req, res) => {
-  try {
-    const items = await ShopItem.find();
-    res.json(items);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false });
-  }
+
+  const items = await ShopItem.find();
+
+  res.json(items);
 });
 
 app.post("/api/admin/shop", async (req, res) => {
-  try {
-    const { itemType, price, iconUrl, enabled } = req.body;
 
-    const item = new ShopItem({
-      itemType: String(itemType).toUpperCase(),
-      price: Number(price),
-      iconUrl: iconUrl || "",
-      enabled: enabled !== false
-    });
+  const {
+    itemType,
+    price,
+    iconUrl,
+    enabled
+  } = req.body;
 
-    await item.save();
+  const item = new ShopItem({
+    itemType: itemType.toUpperCase(),
+    price: Number(price),
+    iconUrl,
+    enabled: enabled !== false
+  });
 
-    res.json({ success: true, item });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false });
-  }
+  await item.save();
+
+  io.emit("shopUpdate");
+
+  res.json({
+    success: true,
+    item
+  });
 });
 
 app.put("/api/admin/shop/:id", async (req, res) => {
-  try {
-    const { itemType, price, iconUrl, enabled } = req.body;
 
-    const item = await ShopItem.findByIdAndUpdate(
-      req.params.id,
-      {
-        itemType: String(itemType).toUpperCase(),
-        price: Number(price),
-        iconUrl: iconUrl || "",
-        enabled
-      },
-      { new: true }
-    );
+  const {
+    itemType,
+    price,
+    iconUrl,
+    enabled
+  } = req.body;
 
-    res.json({ success: true, item });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false });
-  }
+  const item = await ShopItem.findByIdAndUpdate(
+    req.params.id,
+    {
+      itemType: itemType.toUpperCase(),
+      price: Number(price),
+      iconUrl,
+      enabled
+    },
+    {
+      new: true
+    }
+  );
+
+  io.emit("shopUpdate");
+
+  res.json({
+    success: true,
+    item
+  });
 });
 
 app.delete("/api/admin/shop/:id", async (req, res) => {
-  try {
-    await ShopItem.findByIdAndDelete(req.params.id);
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false });
-  }
+
+  await ShopItem.findByIdAndDelete(req.params.id);
+
+  io.emit("shopUpdate");
+
+  res.json({
+    success: true
+  });
 });
 
+/*
+========================
+SELL SYSTEM
+========================
+*/
+
 app.post("/api/sell", async (req, res) => {
-  try {
-    const { name, slot, amount } = req.body;
-    const sellAmount = Number(amount);
 
-    if (!name || slot === undefined || !sellAmount) {
-      return res.status(400).json({ success: false });
-    }
+  const {
+    name,
+    slot,
+    amount
+  } = req.body;
 
-    const id = Date.now().toString() + Math.floor(Math.random() * 9999);
+  const id =
+    Date.now().toString()
+    + Math.floor(Math.random() * 9999);
 
-    const sellRequest = new PendingSell({
-      id,
-      name,
-      slot: Number(slot),
-      amount: sellAmount,
-      status: "PENDING"
-    });
+  const sellRequest = new PendingSell({
+    id,
+    name,
+    slot,
+    amount,
+    status: "PENDING"
+  });
 
-    await sellRequest.save();
+  await sellRequest.save();
 
-    res.json({ success: true, id });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false });
-  }
+  res.json({
+    success: true
+  });
 });
 
 app.get("/api/pending-sells/:name", async (req, res) => {
-  try {
-    const requests = await PendingSell.find({
-      name: req.params.name,
-      status: "PENDING"
-    });
 
-    const text = requests
-      .map(request => `${request.id}|${request.slot}|${request.amount}`)
-      .join("\n");
+  const requests = await PendingSell.find({
+    name: req.params.name,
+    status: "PENDING"
+  });
 
-    res.type("text/plain").send(text);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("");
-  }
+  const text = requests
+    .map(request =>
+      `${request.id}|${request.slot}|${request.amount}`
+    )
+    .join("\n");
+
+  res.type("text/plain").send(text);
 });
 
 app.post("/api/complete-sell", async (req, res) => {
-  try {
-    const { id, name, success, itemType, amount } = req.body;
 
-    const request = await PendingSell.findOne({ id });
+  const {
+    id,
+    name,
+    success,
+    itemType,
+    amount
+  } = req.body;
 
-    if (!request) {
-      return res.status(404).json({ success: false });
-    }
+  const request = await PendingSell.findOne({
+    id
+  });
 
-    if (!success) {
-      request.status = "FAILED";
-      await request.save();
-      return res.json({ success: true });
-    }
+  if (!request) {
 
-    const total = getSellPrice(itemType) * Number(amount || 0);
-    const player = await Player.findOne({ name });
+    return res.status(404).json({
+      success: false
+    });
+  }
 
-    player.balance += total;
-    await player.save();
+  if (!success) {
 
-    request.status = "COMPLETE";
+    request.status = "FAILED";
+
     await request.save();
 
-    res.json({
-      success: true,
-      total,
-      balance: player.balance
+    return res.json({
+      success: true
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false });
   }
+
+  const total =
+    getSellPrice(itemType)
+    * Number(amount || 0);
+
+  const player = await Player.findOne({
+    name
+  });
+
+  player.balance += total;
+
+  await player.save();
+
+  request.status = "COMPLETE";
+
+  await request.save();
+
+  io.emit("balanceUpdate", {
+    name: player.name,
+    balance: player.balance
+  });
+
+  res.json({
+    success: true,
+    total,
+    balance: player.balance
+  });
 });
 
+/*
+========================
+BUY SYSTEM
+========================
+*/
+
 app.post("/api/buy", async (req, res) => {
-  try {
-    const { name, itemType, amount } = req.body;
-    const cleanItemType = String(itemType).toUpperCase();
-    const buyAmount = Number(amount);
 
-    const shopItem = await ShopItem.findOne({
-      itemType: cleanItemType,
-      enabled: true
-    });
+  const {
+    name,
+    itemType,
+    amount
+  } = req.body;
 
-    if (!shopItem) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid item"
-      });
-    }
+  const buyAmount = Number(amount);
 
-    if (isNaN(buyAmount) || buyAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Invalid amount"
-      });
-    }
+  const shopItem = await ShopItem.findOne({
+    itemType,
+    enabled: true
+  });
 
-    const player = await Player.findOne({ name });
+  if (!shopItem) {
 
-    if (!player) {
-      return res.status(404).json({
-        success: false,
-        error: "Player not found"
-      });
-    }
-
-    const totalCost = shopItem.price * buyAmount;
-
-    if (player.balance < totalCost) {
-      return res.status(400).json({
-        success: false,
-        error: "Not enough money"
-      });
-    }
-
-    player.balance -= totalCost;
-    await player.save();
-
-    const id = Date.now().toString() + Math.floor(Math.random() * 9999);
-
-    const buyRequest = new PendingBuy({
-      id,
-      name,
-      itemType: cleanItemType,
-      amount: buyAmount,
-      cost: totalCost,
-      status: "PENDING"
-    });
-
-    await buyRequest.save();
-
-    res.json({
-      success: true,
-      message: "Buy request created"
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({
+    return res.status(400).json({
       success: false,
-      error: "Buy failed"
+      error: "Invalid item"
     });
   }
+
+  const player = await Player.findOne({
+    name
+  });
+
+  if (!player) {
+
+    return res.status(404).json({
+      success: false,
+      error: "Player not found"
+    });
+  }
+
+  const totalCost =
+    shopItem.price * buyAmount;
+
+  if (player.balance < totalCost) {
+
+    return res.status(400).json({
+      success: false,
+      error: "Not enough money"
+    });
+  }
+
+  player.balance -= totalCost;
+
+  await player.save();
+
+  io.emit("balanceUpdate", {
+    name: player.name,
+    balance: player.balance
+  });
+
+  const id =
+    Date.now().toString()
+    + Math.floor(Math.random() * 9999);
+
+  const buyRequest = new PendingBuy({
+    id,
+    name,
+    itemType,
+    amount: buyAmount,
+    cost: totalCost,
+    status: "PENDING"
+  });
+
+  await buyRequest.save();
+
+  res.json({
+    success: true
+  });
 });
 
 app.get("/api/pending-buys/:name", async (req, res) => {
-  try {
-    const requests = await PendingBuy.find({
-      name: req.params.name,
-      status: "PENDING"
-    });
 
-    const text = requests
-      .map(request => `${request.id}|${request.itemType}|${request.amount}`)
-      .join("\n");
+  const requests = await PendingBuy.find({
+    name: req.params.name,
+    status: "PENDING"
+  });
 
-    res.type("text/plain").send(text);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("");
-  }
+  const text = requests
+    .map(request =>
+      `${request.id}|${request.itemType}|${request.amount}`
+    )
+    .join("\n");
+
+  res.type("text/plain").send(text);
 });
 
 app.post("/api/complete-buy", async (req, res) => {
-  try {
-    const { id, success } = req.body;
 
-    const request = await PendingBuy.findOne({ id });
+  const {
+    id,
+    success
+  } = req.body;
 
-    if (!request) {
-      return res.status(404).json({ success: false });
-    }
+  const request = await PendingBuy.findOne({
+    id
+  });
 
-    if (!success) {
-      request.status = "FAILED";
-      await request.save();
-      return res.json({ success: true });
-    }
+  if (!request) {
 
-    request.status = "COMPLETE";
-    await request.save();
-
-    res.json({ success: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false });
+    return res.status(404).json({
+      success: false
+    });
   }
+
+  request.status =
+    success ? "COMPLETE" : "FAILED";
+
+  await request.save();
+
+  res.json({
+    success: true
+  });
 });
+
+/*
+========================
+SOCKET CONNECTION
+========================
+*/
+
+io.on("connection", (socket) => {
+
+  console.log("Client connected");
+
+  socket.on("disconnect", () => {
+    console.log("Client disconnected");
+  });
+});
+
+/*
+========================
+START SERVER
+========================
+*/
 
 const port = process.env.PORT || 3000;
 
-app.listen(port, () => {
+server.listen(port, () => {
   console.log(`Inventory API running on port ${port}`);
 });
