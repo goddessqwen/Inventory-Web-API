@@ -1,37 +1,53 @@
 const express = require("express");
 
 const app = express();
-const PORT = 3000;
-const API_KEY = "change-this-secret-key";
+app.use(express.json());
 
-app.use(express.json({ limit: "2mb" }));
-
-app.get("/", (req, res) => {
-  res.send(`
-    <h1>Inventory Web API is running</h1>
-    <p>POST player inventory to <code>/api/inventory</code></p>
-  `);
-});
+const inventories = {};
 
 app.post("/api/inventory", (req, res) => {
-  const apiKey = req.header("X-API-Key");
+  const data = req.body;
 
-  if (apiKey !== API_KEY) {
-    return res.status(401).json({
-      success: false,
-      message: "Invalid API key"
-    });
-  }
+  inventories[data.name] = data;
 
   console.log("Inventory received:");
-  console.log(JSON.stringify(req.body, null, 2));
+  console.log(JSON.stringify(data, null, 2));
 
   res.json({
     success: true,
-    message: "Inventory received"
+    message: "Inventory saved"
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Inventory API running on http://localhost:${PORT}`);
+app.get("/inventory/:name", (req, res) => {
+  const name = req.params.name;
+  const data = inventories[name];
+
+  if (!data) {
+    return res.send(`<h1>No inventory found for ${name}</h1>`);
+  }
+
+  const items = data.inventory.map(item => `
+    <div style="border:1px solid #555;padding:10px;margin:5px;width:120px;">
+      <strong>Slot ${item.slot}</strong><br>
+      ${item.type}<br>
+      x${item.amount}
+    </div>
+  `).join("");
+
+  res.send(`
+    <html>
+      <body style="background:#111;color:white;font-family:Arial;">
+        <h1>${data.name}'s Inventory</h1>
+        <p>UUID: ${data.uuid}</p>
+        <div style="display:flex;flex-wrap:wrap;">
+          ${items}
+        </div>
+      </body>
+    </html>
+  `);
+});
+
+app.listen(3000, () => {
+  console.log("Inventory API running on http://localhost:3000");
 });
