@@ -1,14 +1,40 @@
 const express = require("express");
 const cors = require("cors");
+const mongoose = require("mongoose");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-const inventories = {};
-const balances = {};
-const pendingSells = [];
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => {
+    console.log("Connected to MongoDB");
+  })
+  .catch(err => {
+    console.error("MongoDB connection error:", err);
+  });
+
+const playerSchema = new mongoose.Schema({
+  uuid: String,
+  name: String,
+  inventory: Array,
+  balance: {
+    type: Number,
+    default: 0
+  }
+});
+
+const pendingSellSchema = new mongoose.Schema({
+  id: String,
+  name: String,
+  slot: Number,
+  amount: Number,
+  status: String
+});
+
+const Player = mongoose.model("Player", playerSchema);
+const PendingSell = mongoose.model("PendingSell", pendingSellSchema);
 
 const prices = {
   DIAMOND: 100,
@@ -24,319 +50,209 @@ function getPrice(type) {
   return prices[type] || 1;
 }
 
-app.post("/api/inventory", (req, res) => {
-  const data = req.body;
+app.post("/api/inventory", async (req, res) => {
+  try {
+    const data = req.body;
 
-  inventories[data.name] = data;
+    let player = await Player.findOne({ name: data.name });
 
-  if (balances[data.name] === undefined) {
-    balances[data.name] = 0;
-  }
+    if (!player) {
+      player = new Player({
+        uuid: data.uuid,
+        name: data.name,
+        inventory: data.inventory,
+        balance: 0
+      });
+    } else {
+      player.uuid = data.uuid;
+      player.inventory = data.inventory;
+    }
 
-  console.log("Inventory received:");
-  console.log(JSON.stringify(data, null, 2));
+    await player.save();
 
-  res.json({
-    success: true,
-    message: "Inventory saved"
-  });
-});
+    console.log(`Saved inventory for ${data.name}`);
 
-app.get("/api/inventory/:name", (req, res) => {
-  const name = req.params.name;
-  const data = inventories[name];
-
-  if (!data) {
-    return res.status(404).json({
-      success: false,
-      error: "Player not found"
-    });
-  }
-
-  res.json({
-    ...data,
-    balance: balances[name] || 0,
-    prices
-  });
-});
-
-app.post("/api/sell", (req, res) => {
-  const { name, slot, amount } = req.body;
-
-  if (!name || slot === undefined || !amount) {
-    return res.status(400).json({
-      success: false,
-      error: "Missing name, slot, or amount"
-    });
-  }
-
-  const sellAmount = Number(amount);
-
-  if (isNaN(sellAmount) || sellAmount <= 0) {
-    return res.status(400).json({
-      success: false,
-      error: "Invalid sell amount"
-    });
-  }
-
-  const id = Date.now().toString() + Math.floor(Math.random() * 9999);
-
-  pendingSells.push({
-    id,
-    name,
-    slot: Number(slot),
-    amount: sellAmount,
-    status: "PENDING"
-  });
-
-  console.log(`Sell request created: ${name} slot ${slot} amount ${sellAmount}`);
-
-  res.json({
-    success: true,
-    message: "Sell request created",
-    id
-  });
-});
-
-app.get("/api/pending-sells/:name", (req, res) => {
-  const name = req.params.name;
-
-  const requests = pendingSells.filter(
-    request => request.name === name && request.status === "PENDING"
-  );
-
-  const text = requests
-    .map(request => `${request.id}|${request.slot}|${request.amount}`)
-    .join("\n");
-
-  res.type("text/plain").send(text);
-});
-
-app.post("/api/complete-sell", (req, res) => {
-  const { id, name, success, itemType, amount } = req.body;
-
-  const request = pendingSells.find(request => request.id === id);
-
-  if (!request) {
-    return res.status(404).json({
-      success: false,
-      error: "Sell request not found"
-    });
-  }
-
-  if (request.status !== "PENDING") {
-    return res.status(400).json({
-      success: false,
-      error: "Sell request already processed"
-    });
-  }
-
-  if (!success) {
-    request.status = "FAILED";
-
-    return res.json({
+    res.json({
       success: true,
-      message: "Sell failed"
+      message: "Inventory saved"
+    });
+
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: "Failed to save inventory"
     });
   }
-
-  const total = getPrice(itemType) * Number(amount || 0);
-
-  balances[name] = (balances[name] || 0) + total;
-
-  request.status = "COMPLETE";
-  request.itemType = itemType;
-  request.amount = amount;
-  request.total = total;
-
-  console.log(`${name} sold ${amount}x ${itemType} for $${total}`);
-
-  res.json({
-    success: true,
-    message: "Sell completed",
-    total,
-    balance: balances[name]
-  });
 });
 
-app.get("/inventory/:name", (req, res) => {
-  const name = req.params.name;
-  const data = inventories[name];
+app.get("/api/inventory/:name", async (req, res) => {
+  try {
+    const player = await Player.findOne({
+      name: req.params.name
+    });
 
-  if (!data) {
-    return res.send(`
-      <html>
-        <body style="background:#111;color:white;font-family:Arial;">
-          <h1>No inventory found for ${name}</h1>
-        </body>
-      </html>
-    `);
+    if (!player) {
+      return res.status(404).json({
+        success: false,
+        error: "Player not found"
+      });
+    }
+
+    res.json({
+      uuid: player.uuid,
+      name: player.name,
+      inventory: player.inventory,
+      balance: player.balance,
+      prices
+    });
+
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: "Database error"
+    });
   }
+});
 
-  const balance = balances[name] || 0;
+app.post("/api/sell", async (req, res) => {
+  try {
+    const { name, slot, amount } = req.body;
 
-  const slots = Array.from({ length: 36 }, (_, i) => {
-    const item = data.inventory.find(x => x.slot === i);
-    const priceEach = item ? getPrice(item.type) : 0;
+    if (!name || slot === undefined || !amount) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing name, slot, or amount"
+      });
+    }
 
-    return `
-      <div class="slot">
-        ${
-          item
-            ? `
-          <div class="item">${item.type.replaceAll("_", " ")}</div>
-          <div class="amount">${item.amount}</div>
-          <button class="sell" onclick="sellItem('${data.name}', ${item.slot}, ${item.amount}, ${priceEach})">
-            Sell
-          </button>
-        `
-            : ""
-        }
-      </div>
-    `;
-  }).join("");
+    const sellAmount = Number(amount);
 
-  res.send(`
-    <html>
-    <head>
-      <style>
-        body {
-          background: #0b0f1a;
-          color: white;
-          font-family: Arial, sans-serif;
-          padding: 30px;
-        }
+    if (isNaN(sellAmount) || sellAmount <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid amount"
+      });
+    }
 
-        .container {
-          display: flex;
-          gap: 30px;
-          align-items: flex-start;
-        }
+    const id = Date.now().toString() + Math.floor(Math.random() * 9999);
 
-        .skin {
-          image-rendering: pixelated;
-        }
+    const sellRequest = new PendingSell({
+      id,
+      name,
+      slot: Number(slot),
+      amount: sellAmount,
+      status: "PENDING"
+    });
 
-        .inventory {
-          background: #c6c6c6;
-          border: 4px solid #555;
-          padding: 16px;
-          box-shadow: inset 3px 3px #fff, inset -3px -3px #777;
-        }
+    await sellRequest.save();
 
-        .title,
-        .money {
-          color: #222;
-          font-weight: bold;
-          margin-bottom: 10px;
-        }
+    res.json({
+      success: true,
+      message: "Sell request created",
+      id
+    });
 
-        .grid {
-          display: grid;
-          grid-template-columns: repeat(9, 68px);
-          gap: 4px;
-        }
+  } catch (err) {
+    console.error(err);
 
-        .slot {
-          width: 68px;
-          height: 68px;
-          background: #8b8b8b;
-          border: 3px solid;
-          border-color: #373737 #fff #fff #373737;
-          position: relative;
-          overflow: hidden;
-          color: white;
-          font-size: 8px;
-          text-align: center;
-        }
+    res.status(500).json({
+      success: false,
+      error: "Failed to create sell request"
+    });
+  }
+});
 
-        .item {
-          padding-top: 7px;
-          text-shadow: 1px 1px #000;
-        }
+app.get("/api/pending-sells/:name", async (req, res) => {
+  try {
+    const requests = await PendingSell.find({
+      name: req.params.name,
+      status: "PENDING"
+    });
 
-        .amount {
-          position: absolute;
-          right: 4px;
-          bottom: 18px;
-          font-weight: bold;
-          font-size: 12px;
-          text-shadow: 1px 1px #000;
-        }
+    const text = requests
+      .map(request =>
+        `${request.id}|${request.slot}|${request.amount}`
+      )
+      .join("\n");
 
-        .sell {
-          position: absolute;
-          left: 4px;
-          right: 4px;
-          bottom: 2px;
-          font-size: 9px;
-          cursor: pointer;
-        }
-      </style>
-    </head>
+    res.type("text/plain").send(text);
 
-    <body>
-      <h1>${data.name}'s Inventory</h1>
+  } catch (err) {
+    console.error(err);
 
-      <div class="container">
-        <img class="skin" src="https://mc-heads.net/body/${data.name}/180" alt="${data.name}" />
+    res.status(500).send("");
+  }
+});
 
-        <div class="inventory">
-          <div class="title">Inventory</div>
-          <div class="money">Money: $${balance}</div>
+app.post("/api/complete-sell", async (req, res) => {
+  try {
+    const { id, name, success, itemType, amount } = req.body;
 
-          <div class="grid">
-            ${slots}
-          </div>
-        </div>
-      </div>
+    const request = await PendingSell.findOne({ id });
 
-      <script>
-        async function sellItem(name, slot, maxAmount, priceEach) {
-          const amountText = prompt(
-            "How many do you want to sell? Max: " + maxAmount + "\\nPrice each: $" + priceEach
-          );
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        error: "Sell request not found"
+      });
+    }
 
-          if (!amountText) {
-            return;
-          }
+    if (request.status !== "PENDING") {
+      return res.status(400).json({
+        success: false,
+        error: "Already processed"
+      });
+    }
 
-          const amount = Number(amountText);
+    if (!success) {
+      request.status = "FAILED";
+      await request.save();
 
-          if (isNaN(amount) || amount <= 0) {
-            alert("Enter a real number.");
-            return;
-          }
+      return res.json({
+        success: true,
+        message: "Sell failed"
+      });
+    }
 
-          if (amount > maxAmount) {
-            alert("You cannot sell more than you have.");
-            return;
-          }
+    const total = getPrice(itemType) * Number(amount || 0);
 
-          const response = await fetch("/api/sell", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              name,
-              slot,
-              amount
-            })
-          });
+    const player = await Player.findOne({ name });
 
-          const result = await response.json();
+    if (!player) {
+      return res.status(404).json({
+        success: false,
+        error: "Player not found"
+      });
+    }
 
-          if (result.success) {
-            alert("Sell request sent. Wait up to 5 seconds, then refresh.");
-          } else {
-            alert(result.error || "Sell failed");
-          }
-        }
-      </script>
-    </body>
-    </html>
-  `);
+    player.balance += total;
+
+    await player.save();
+
+    request.status = "COMPLETE";
+
+    await request.save();
+
+    console.log(`${name} sold ${amount}x ${itemType} for $${total}`);
+
+    res.json({
+      success: true,
+      total,
+      balance: player.balance
+    });
+
+  } catch (err) {
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: "Sell completion failed"
+    });
+  }
 });
 
 const port = process.env.PORT || 3000;
