@@ -26,6 +26,7 @@ function getPrice(type) {
 
 app.post("/api/inventory", (req, res) => {
   const data = req.body;
+
   inventories[data.name] = data;
 
   if (balances[data.name] === undefined) {
@@ -35,7 +36,10 @@ app.post("/api/inventory", (req, res) => {
   console.log("Inventory received:");
   console.log(JSON.stringify(data, null, 2));
 
-  res.json({ success: true, message: "Inventory saved" });
+  res.json({
+    success: true,
+    message: "Inventory saved"
+  });
 });
 
 app.get("/api/inventory/:name", (req, res) => {
@@ -57,12 +61,21 @@ app.get("/api/inventory/:name", (req, res) => {
 });
 
 app.post("/api/sell", (req, res) => {
-  const { name, slot } = req.body;
+  const { name, slot, amount } = req.body;
 
-  if (!name || slot === undefined) {
+  if (!name || slot === undefined || !amount) {
     return res.status(400).json({
       success: false,
-      error: "Missing name or slot"
+      error: "Missing name, slot, or amount"
+    });
+  }
+
+  const sellAmount = Number(amount);
+
+  if (isNaN(sellAmount) || sellAmount <= 0) {
+    return res.status(400).json({
+      success: false,
+      error: "Invalid sell amount"
     });
   }
 
@@ -72,10 +85,11 @@ app.post("/api/sell", (req, res) => {
     id,
     name,
     slot: Number(slot),
+    amount: sellAmount,
     status: "PENDING"
   });
 
-  console.log(`Sell request created: ${name} slot ${slot}`);
+  console.log(`Sell request created: ${name} slot ${slot} amount ${sellAmount}`);
 
   res.json({
     success: true,
@@ -92,7 +106,7 @@ app.get("/api/pending-sells/:name", (req, res) => {
   );
 
   const text = requests
-    .map(request => `${request.id}|${request.slot}`)
+    .map(request => `${request.id}|${request.slot}|${request.amount}`)
     .join("\n");
 
   res.type("text/plain").send(text);
@@ -100,6 +114,7 @@ app.get("/api/pending-sells/:name", (req, res) => {
 
 app.post("/api/complete-sell", (req, res) => {
   const { id, name, success, itemType, amount } = req.body;
+
   const request = pendingSells.find(request => request.id === id);
 
   if (!request) {
@@ -118,6 +133,7 @@ app.post("/api/complete-sell", (req, res) => {
 
   if (!success) {
     request.status = "FAILED";
+
     return res.json({
       success: true,
       message: "Sell failed"
@@ -161,7 +177,7 @@ app.get("/inventory/:name", (req, res) => {
 
   const slots = Array.from({ length: 36 }, (_, i) => {
     const item = data.inventory.find(x => x.slot === i);
-    const price = item ? getPrice(item.type) * item.amount : 0;
+    const priceEach = item ? getPrice(item.type) : 0;
 
     return `
       <div class="slot">
@@ -170,8 +186,8 @@ app.get("/inventory/:name", (req, res) => {
             ? `
           <div class="item">${item.type.replaceAll("_", " ")}</div>
           <div class="amount">${item.amount}</div>
-          <button class="sell" onclick="sellItem('${data.name}', ${item.slot})">
-            Sell $${price}
+          <button class="sell" onclick="sellItem('${data.name}', ${item.slot}, ${item.amount}, ${priceEach})">
+            Sell
           </button>
         `
             : ""
@@ -276,11 +292,37 @@ app.get("/inventory/:name", (req, res) => {
       </div>
 
       <script>
-        async function sellItem(name, slot) {
+        async function sellItem(name, slot, maxAmount, priceEach) {
+          const amountText = prompt(
+            "How many do you want to sell? Max: " + maxAmount + "\\nPrice each: $" + priceEach
+          );
+
+          if (!amountText) {
+            return;
+          }
+
+          const amount = Number(amountText);
+
+          if (isNaN(amount) || amount <= 0) {
+            alert("Enter a real number.");
+            return;
+          }
+
+          if (amount > maxAmount) {
+            alert("You cannot sell more than you have.");
+            return;
+          }
+
           const response = await fetch("/api/sell", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name, slot })
+            headers: {
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              name,
+              slot,
+              amount
+            })
           });
 
           const result = await response.json();
