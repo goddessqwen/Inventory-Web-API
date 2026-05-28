@@ -42,6 +42,14 @@ const playerSchema = new mongoose.Schema({
   }
 });
 
+const linkCodeSchema = new mongoose.Schema({
+  code: String,
+  uuid: String,
+  name: String,
+  expiresAt: Date,
+  usedAt: Date
+});
+
 const pendingSellSchema = new mongoose.Schema({
   id: String,
   name: String,
@@ -57,6 +65,24 @@ const pendingBuySchema = new mongoose.Schema({
   amount: Number,
   cost: Number,
   status: String
+});
+
+const twitchGateLinkSchema = new mongoose.Schema({
+  code: String,
+  minecraftUuid: String,
+  minecraftName: String,
+  twitchUserId: String,
+  twitchLogin: String,
+  allowed: {
+    type: Boolean,
+    default: false
+  },
+  expiresAt: Date,
+  linkedAt: Date,
+  createdAt: {
+    type: Date,
+    default: Date.now
+  }
 });
 
 const shopItemSchema = new mongoose.Schema({
@@ -85,10 +111,23 @@ MODELS
 */
 
 const Player = mongoose.model("Player", playerSchema);
+const LinkCode = mongoose.model("LinkCode", linkCodeSchema);
 const PendingSell = mongoose.model("PendingSell", pendingSellSchema);
 const PendingBuy = mongoose.model("PendingBuy", pendingBuySchema);
+const TwitchGateLink = mongoose.model("TwitchGateLink", twitchGateLinkSchema);
 const ShopItem = mongoose.model("ShopItem", shopItemSchema);
 const SellPrice = mongoose.model("SellPrice", sellPriceSchema);
+
+const SERVER_API_KEY = process.env.SERVER_API_KEY || "mySecret123456789";
+const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
+const TWITCH_CLIENT_SECRET = process.env.TWITCH_CLIENT_SECRET;
+const TWITCH_CHANNEL = process.env.TWITCH_CHANNEL || "goddess_qwen";
+const TWITCH_REDIRECT_URI =
+  process.env.TWITCH_REDIRECT_URI ||
+  "https://inventory-web-api.onrender.com/api/twitch/callback";
+const WEBSITE_URL =
+  process.env.WEBSITE_URL ||
+  "https://vfusions.com/minecraft";
 
 /*
 ========================
@@ -116,6 +155,84 @@ async function getSellPricesMap() {
     prices[item.itemType] = item.price;
     return prices;
   }, {});
+}
+
+function createLinkCode() {
+
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+
+  for (let i = 0; i < 6; i++) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+
+  return code;
+}
+
+function requireServerKey(req, res) {
+
+  const key = req.headers["x-server-key"] || req.headers["x-api-key"];
+
+  if (key !== SERVER_API_KEY) {
+
+    res.status(401).json({
+      allowed: false,
+      success: false,
+      message: "Invalid server API key"
+    });
+
+    return false;
+  }
+
+  return true;
+}
+
+async function createGateCode(minecraftUuid, minecraftName) {
+
+  await TwitchGateLink.deleteMany({
+    minecraftUuid,
+    allowed: false
+  });
+
+  let code = createLinkCode();
+
+  while (await TwitchGateLink.findOne({
+    code,
+    allowed: false,
+    expiresAt: { $gt: new Date() }
+  })) {
+    code = createLinkCode();
+  }
+
+  const link = new TwitchGateLink({
+    code,
+    minecraftUuid,
+    minecraftName,
+    allowed: false,
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000)
+  });
+
+  await link.save();
+
+  return link;
+}
+
+async function twitchFetch(url, accessToken) {
+
+  const res = await fetch(url, {
+    headers: {
+      "Client-ID": TWITCH_CLIENT_ID,
+      "Authorization": `Bearer ${accessToken}`
+    }
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    throw new Error(data.message || data.error || `Twitch request failed with ${res.status}`);
+  }
+
+  return data;
 }
 
 /*
@@ -160,6 +277,347 @@ ROOT
 
 app.get("/", (req, res) => {
   res.send("Inventory API is running.");
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    success: true,
+    service: "InventoryWebAPI",
+    twitchGate: true
+  });
+});
+
+/*
+========================
+TWITCH FOLLOWER GATE
+========================
+*/
+
+app.post("/api/minecraft/join", async (req, res) => {
+
+  try {
+
+    if (!requireServerKey(req, res)) return;
+
+    const { minecraftUuid, minecraftName } = req.body;
+
+    if (!minecraftUuid || !minecraftName) {
+
+      return res.status(400).json({
+        allowed: false,
+        message: "Missing minecraftUuid or minecraftName"
+      });
+    }
+
+    const linked = await TwitchGateLink.findOne({
+      minecraftUuid,
+      allowed: true
+    });
+
+    if (linked) {
+
+      return res.json({
+        allowed: true,
+        code: null,
+        message: "Verified Twitch follower"
+      });
+    }
+
+    const link = await createGateCode(minecraftUuid, minecraftName);
+
+    res.json({
+      allowed: false,
+      code: link.code,
+      message: `Follow twitch.tv/${TWITCH_CHANNEL}, then link your Twitch account.`
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      allowed: false,
+      message: err.message
+    });
+  }
+});
+
+app.get("/api/link-code/:code", async (req, res) => {
+
+  try {
+
+    const code = String(req.params.code || "").trim().toUpperCase();
+
+    const link = await TwitchGateLink.findOne({
+      code,
+      allowed: false,
+      expiresAt: { $gt: new Date() }
+    });
+
+    if (!link) {
+
+      return res.status(404).json({
+        success: false,
+        error: "Invalid or expired code"
+      });
+    }
+
+    res.json({
+      success: true,
+      code: link.code,
+      minecraftName: link.minecraftName,
+      twitchLoginUrl: `${API_PUBLIC_BASE_URL(req)}/api/twitch/login?code=${encodeURIComponent(link.code)}`
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+function API_PUBLIC_BASE_URL(req) {
+  return `${req.protocol}://${req.get("host")}`;
+}
+
+app.get("/api/twitch/login", async (req, res) => {
+
+  const code = String(req.query.code || "").trim().toUpperCase();
+
+  if (!code) {
+    return res.status(400).send("Missing link code.");
+  }
+
+  const link = await TwitchGateLink.findOne({
+    code,
+    allowed: false,
+    expiresAt: { $gt: new Date() }
+  });
+
+  if (!link) {
+    return res.status(404).send("Invalid or expired link code.");
+  }
+
+  if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET) {
+    return res.status(500).send("Twitch OAuth is not configured.");
+  }
+
+  const params = new URLSearchParams({
+    client_id: TWITCH_CLIENT_ID,
+    redirect_uri: TWITCH_REDIRECT_URI,
+    response_type: "code",
+    scope: "user:read:follows",
+    state: code
+  });
+
+  res.redirect(`https://id.twitch.tv/oauth2/authorize?${params.toString()}`);
+});
+
+app.get("/api/twitch/callback", async (req, res) => {
+
+  try {
+
+    const oauthCode = req.query.code;
+    const state = String(req.query.state || "").trim().toUpperCase();
+
+    if (!oauthCode || !state) {
+      return res.status(400).send("Missing Twitch OAuth code or state.");
+    }
+
+    const link = await TwitchGateLink.findOne({
+      code: state,
+      allowed: false,
+      expiresAt: { $gt: new Date() }
+    });
+
+    if (!link) {
+      return res.status(404).send("Invalid or expired Minecraft link code.");
+    }
+
+    const tokenRes = await fetch("https://id.twitch.tv/oauth2/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: TWITCH_CLIENT_ID,
+        client_secret: TWITCH_CLIENT_SECRET,
+        code: oauthCode,
+        grant_type: "authorization_code",
+        redirect_uri: TWITCH_REDIRECT_URI
+      })
+    });
+    const tokens = await tokenRes.json();
+
+    if (!tokenRes.ok || !tokens.access_token) {
+      throw new Error(tokens.message || tokens.error_description || "Could not get Twitch token");
+    }
+
+    const userData = await twitchFetch("https://api.twitch.tv/helix/users", tokens.access_token);
+    const twitchUser = userData.data?.[0];
+
+    if (!twitchUser) {
+      throw new Error("Could not load Twitch user");
+    }
+
+    const channelData = await twitchFetch(
+      `https://api.twitch.tv/helix/users?login=${encodeURIComponent(TWITCH_CHANNEL)}`,
+      tokens.access_token
+    );
+    const channel = channelData.data?.[0];
+
+    if (!channel) {
+      throw new Error(`Could not find Twitch channel ${TWITCH_CHANNEL}`);
+    }
+
+    const followData = await twitchFetch(
+      `https://api.twitch.tv/helix/channels/followed?user_id=${encodeURIComponent(twitchUser.id)}&broadcaster_id=${encodeURIComponent(channel.id)}`,
+      tokens.access_token
+    );
+    const follows = Array.isArray(followData.data) && followData.data.length > 0;
+
+    if (!follows) {
+      return res.status(403).send(`You must follow twitch.tv/${TWITCH_CHANNEL} before joining.`);
+    }
+
+    link.twitchUserId = twitchUser.id;
+    link.twitchLogin = twitchUser.login;
+    link.allowed = true;
+    link.linkedAt = new Date();
+
+    await link.save();
+
+    res.send(`
+      <html>
+        <body style="font-family: sans-serif; padding: 32px;">
+          <h1>Twitch linked!</h1>
+          <p>${link.minecraftName} is verified as a follower of twitch.tv/${TWITCH_CHANNEL}.</p>
+          <p>You can return to Minecraft and run /twitchcode or reconnect.</p>
+        </body>
+      </html>
+    `);
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).send(`Twitch verification failed: ${err.message}`);
+  }
+});
+
+/*
+========================
+MINECRAFT LINK CODES
+========================
+*/
+
+app.post("/api/link-code", async (req, res) => {
+
+  try {
+
+    const { uuid, name } = req.body;
+
+    if (!uuid || !name) {
+
+      return res.status(400).json({
+        success: false,
+        error: "Missing uuid or name"
+      });
+    }
+
+    await LinkCode.deleteMany({
+      uuid,
+      usedAt: null
+    });
+
+    let code = createLinkCode();
+
+    while (await LinkCode.findOne({
+      code,
+      usedAt: null,
+      expiresAt: { $gt: new Date() }
+    })) {
+      code = createLinkCode();
+    }
+
+    const linkCode = new LinkCode({
+      code,
+      uuid,
+      name,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+      usedAt: null
+    });
+
+    await linkCode.save();
+
+    res.json({
+      success: true,
+      code,
+      name,
+      uuid,
+      expiresAt: linkCode.expiresAt
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+app.post("/api/verify-link-code", async (req, res) => {
+
+  try {
+
+    const code = String(req.body.code || "").trim().toUpperCase();
+
+    if (!code) {
+
+      return res.status(400).json({
+        success: false,
+        error: "Missing code"
+      });
+    }
+
+    const linkCode = await LinkCode.findOne({
+      code,
+      usedAt: null,
+      expiresAt: { $gt: new Date() }
+    });
+
+    if (!linkCode) {
+
+      return res.status(404).json({
+        success: false,
+        error: "Invalid or expired code"
+      });
+    }
+
+    linkCode.usedAt = new Date();
+
+    await linkCode.save();
+
+    res.json({
+      success: true,
+      name: linkCode.name,
+      uuid: linkCode.uuid
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
 });
 
 /*
