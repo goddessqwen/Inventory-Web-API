@@ -781,7 +781,7 @@ app.post("/api/admin/shop", async (req, res) => {
     }
 
     const item = new ShopItem({
-      itemType: itemType.toUpperCase(),
+      itemType: itemType,
       displayName: displayName || "",
       price: Number(price),
       imageUrl: imageUrl || "",
@@ -817,7 +817,7 @@ app.put("/api/admin/shop/:id", async (req, res) => {
     const item = await ShopItem.findByIdAndUpdate(
       req.params.id,
       {
-        itemType: itemType.toUpperCase(),
+        itemType: itemType,
         displayName: displayName || "",
         price: Number(price),
         imageUrl: imageUrl || "",
@@ -1035,8 +1035,9 @@ app.post("/api/buy", async (req, res) => {
 
     const { name, itemType, amount } = req.body;
 
+    // KEEP NBT EXACTLY AS TYPED
     const cleanItemType =
-      String(itemType).trim().toUpperCase();
+      String(itemType).trim();
 
     const buyAmount = Number(amount);
 
