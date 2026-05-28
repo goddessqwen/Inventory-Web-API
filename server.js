@@ -125,6 +125,9 @@ const TWITCH_CHANNEL = process.env.TWITCH_CHANNEL || "goddess_qwen";
 const TWITCH_REDIRECT_URI =
   process.env.TWITCH_REDIRECT_URI ||
   "https://inventory-web-api.onrender.com/api/twitch/callback";
+const PUBLIC_API_URL =
+  process.env.PUBLIC_API_URL ||
+  "https://inventory-web-api.onrender.com";
 const WEBSITE_URL =
   process.env.WEBSITE_URL ||
   "https://vfusions.com/minecraft";
@@ -381,7 +384,13 @@ app.get("/api/link-code/:code", async (req, res) => {
 });
 
 function API_PUBLIC_BASE_URL(req) {
-  return `${req.protocol}://${req.get("host")}`;
+  const forwardedProto = req.get("x-forwarded-proto");
+
+  if (PUBLIC_API_URL) {
+    return PUBLIC_API_URL.replace(/\/$/, "");
+  }
+
+  return `${forwardedProto || req.protocol}://${req.get("host")}`;
 }
 
 app.get("/api/twitch/login", async (req, res) => {
