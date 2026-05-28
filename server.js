@@ -160,16 +160,6 @@ async function getSellPricesMap() {
   }, {});
 }
 
-
-function normalizeMinecraftItemType(itemType) {
-  let clean = String(itemType || "").trim();
-  clean = clean.replace(/\s+/g, "_").toLowerCase();
-  if (clean && !clean.includes(":") && !clean.startsWith("cmd:") && !clean.startsWith("command:")) {
-    clean = `minecraft:${clean}`;
-  }
-  return clean;
-}
-
 function createLinkCode() {
 
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -350,175 +340,6 @@ app.post("/api/minecraft/join", async (req, res) => {
 
     res.status(500).json({
       allowed: false,
-      message: err.message
-    });
-  }
-});
-
-
-
-app.post("/api/minecraft/new-code", async (req, res) => {
-
-  try {
-
-    if (!requireServerKey(req, res)) return;
-
-    const minecraftUuid = req.body.minecraftUuid || req.body.uuid;
-    const minecraftName = req.body.minecraftName || req.body.name || req.body.playerName;
-
-    if (!minecraftUuid || !minecraftName) {
-      return res.status(400).json({
-        success: false,
-        allowed: false,
-        message: "Missing minecraftUuid or minecraftName"
-      });
-    }
-
-    // Remove old pending codes for this player, but keep already linked/allowed accounts.
-    await TwitchGateLink.deleteMany({
-      $or: [
-        { minecraftUuid, allowed: false },
-        { minecraftName, allowed: false }
-      ]
-    });
-
-    const link = await createGateCode(minecraftUuid, minecraftName);
-
-    res.json({
-      success: true,
-      allowed: false,
-      code: link.code,
-      minecraftUuid: link.minecraftUuid,
-      minecraftName: link.minecraftName,
-      twitchLoginUrl: `${API_PUBLIC_BASE_URL(req)}/api/twitch/login?code=${encodeURIComponent(link.code)}`,
-      message: `New Twitch link code created for ${minecraftName}`
-    });
-
-  } catch (err) {
-
-    console.error(err);
-
-    res.status(500).json({
-      success: false,
-      allowed: false,
-      message: err.message
-    });
-  }
-});
-
-app.post("/api/minecraft/unlink", async (req, res) => {
-
-  try {
-
-    if (!requireServerKey(req, res)) return;
-
-    const minecraftUuid = req.body.minecraftUuid || req.body.uuid;
-    const minecraftName = req.body.minecraftName || req.body.name || req.body.playerName;
-
-    if (!minecraftUuid && !minecraftName) {
-      return res.status(400).json({
-        success: false,
-        message: "Missing minecraftUuid or minecraftName"
-      });
-    }
-
-    const query = { $or: [] };
-    if (minecraftUuid) query.$or.push({ minecraftUuid });
-    if (minecraftName) query.$or.push({ minecraftName });
-
-    const result = await TwitchGateLink.deleteMany(query);
-
-    res.json({
-      success: true,
-      deleted: result.deletedCount || 0,
-      message: "Minecraft Twitch link removed. Use /twitchgate newcode to create a fresh code."
-    });
-
-  } catch (err) {
-
-    console.error(err);
-
-    res.status(500).json({
-      success: false,
-      message: err.message
-    });
-  }
-});
-
-app.get("/api/twitch/status/:minecraftName", async (req, res) => {
-
-  try {
-
-    const minecraftName = String(req.params.minecraftName || "").trim();
-
-    if (!minecraftName) {
-      return res.status(400).json({
-        linked: false,
-        allowed: false,
-        isFollower: false,
-        message: "Missing minecraftName"
-      });
-    }
-
-    const link = await TwitchGateLink.findOne({
-      minecraftName,
-      allowed: true
-    }).sort({ linkedAt: -1 });
-
-    if (!link) {
-      return res.json({
-        linked: false,
-        allowed: false,
-        isFollower: false,
-        minecraftName
-      });
-    }
-
-    res.json({
-      linked: true,
-      allowed: true,
-      isFollower: true,
-      minecraftName: link.minecraftName,
-      minecraftUuid: link.minecraftUuid,
-      twitchLogin: link.twitchLogin,
-      twitchUserId: link.twitchUserId,
-      linkedAt: link.linkedAt
-    });
-
-  } catch (err) {
-
-    console.error(err);
-
-    res.status(500).json({
-      linked: false,
-      allowed: false,
-      isFollower: false,
-      message: err.message
-    });
-  }
-});
-
-app.get("/api/debug/twitch-links", async (req, res) => {
-
-  try {
-
-    const links = await TwitchGateLink.find()
-      .sort({ createdAt: -1 })
-      .limit(25)
-      .lean();
-
-    res.json({
-      success: true,
-      count: links.length,
-      links
-    });
-
-  } catch (err) {
-
-    console.error(err);
-
-    res.status(500).json({
-      success: false,
       message: err.message
     });
   }
@@ -862,6 +683,30 @@ app.post("/api/inventory", async (req, res) => {
   }
 });
 
+app.get("/api/players", async (req, res) => {
+
+  try {
+
+    const players = await Player.find({}).sort({ name: 1 });
+
+    res.json(players.map(player => ({
+      uuid: player.uuid,
+      name: player.name,
+      balance: player.balance || 0,
+      itemCount: Array.isArray(player.inventory) ? player.inventory.length : 0,
+      lastSeen: player.updatedAt || (player._id && player._id.getTimestamp ? player._id.getTimestamp() : null)
+    })));
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false
+    });
+  }
+});
+
 app.get("/api/inventory/:name", async (req, res) => {
 
   try {
@@ -934,7 +779,7 @@ app.post("/api/admin/shop", async (req, res) => {
     }
 
     const item = new ShopItem({
-      itemType: normalizeMinecraftItemType(itemType),
+      itemType: itemType.toUpperCase(),
       price: Number(price),
       iconUrl,
       enabled: enabled !== false
@@ -968,7 +813,7 @@ app.put("/api/admin/shop/:id", async (req, res) => {
     const item = await ShopItem.findByIdAndUpdate(
       req.params.id,
       {
-        itemType: normalizeMinecraftItemType(itemType),
+        itemType: itemType.toUpperCase(),
         price: Number(price),
         iconUrl,
         enabled
@@ -1031,7 +876,8 @@ app.post("/api/admin/sell-prices", async (req, res) => {
       });
     }
 
-    const cleanType = normalizeMinecraftItemType(itemType);
+    const cleanType =
+      String(itemType).trim().toUpperCase();
 
     let item = await SellPrice.findOne({
       itemType: cleanType
@@ -1183,7 +1029,8 @@ app.post("/api/buy", async (req, res) => {
 
     const { name, itemType, amount } = req.body;
 
-    const cleanItemType = normalizeMinecraftItemType(itemType);
+    const cleanItemType =
+      String(itemType).trim().toUpperCase();
 
     const buyAmount = Number(amount);
 
