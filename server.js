@@ -87,7 +87,9 @@ const twitchGateLinkSchema = new mongoose.Schema({
 
 const shopItemSchema = new mongoose.Schema({
   itemType: String,
+  displayName: String,
   price: Number,
+  imageUrl: String,
   iconUrl: String,
   enabled: {
     type: Boolean,
@@ -768,7 +770,7 @@ app.post("/api/admin/shop", async (req, res) => {
 
   try {
 
-    const { itemType, price, iconUrl, enabled } = req.body;
+    const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
 
     if (!itemType || price === undefined) {
 
@@ -780,7 +782,9 @@ app.post("/api/admin/shop", async (req, res) => {
 
     const item = new ShopItem({
       itemType: itemType.toUpperCase(),
+      displayName: displayName || "",
       price: Number(price),
+      imageUrl: imageUrl || "",
       iconUrl,
       enabled: enabled !== false
     });
@@ -808,13 +812,15 @@ app.put("/api/admin/shop/:id", async (req, res) => {
 
   try {
 
-    const { itemType, price, iconUrl, enabled } = req.body;
+    const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
 
     const item = await ShopItem.findByIdAndUpdate(
       req.params.id,
       {
         itemType: itemType.toUpperCase(),
+        displayName: displayName || "",
         price: Number(price),
+        imageUrl: imageUrl || "",
         iconUrl,
         enabled
       },
