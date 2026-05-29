@@ -982,7 +982,9 @@ app.delete("/api/admin/sell-prices", async (req, res) => {
 
   try {
 
-    const { itemType } = req.body;
+    const itemType =
+      req.body?.itemType ||
+      req.query?.itemType;
     const cleanType =
       String(itemType || "").trim();
 
