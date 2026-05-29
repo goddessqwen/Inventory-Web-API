@@ -439,6 +439,13 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+app.get("/api/test-region", (req, res) => {
+  res.json({
+    success: true,
+    message: "Region test route works"
+  });
+});
+
 /*
 ========================
 TWITCH FOLLOWER GATE
