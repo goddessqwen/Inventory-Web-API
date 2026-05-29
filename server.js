@@ -446,6 +446,10 @@ app.get("/api/test-region", (req, res) => {
   });
 });
 
+app.get("/api/region-plots", async (req, res) => {
+  res.json([]);
+});
+
 /*
 ========================
 TWITCH FOLLOWER GATE
