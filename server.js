@@ -55,6 +55,8 @@ const pendingSellSchema = new mongoose.Schema({
   name: String,
   slot: Number,
   amount: Number,
+  itemType: String,
+  nbt: String,
   status: String
 });
 
@@ -106,6 +108,18 @@ const sellPriceSchema = new mongoose.Schema({
   }
 });
 
+const siteSettingSchema = new mongoose.Schema({
+  key: {
+    type: String,
+    unique: true
+  },
+  value: mongoose.Schema.Types.Mixed,
+  updatedAt: {
+    type: Date,
+    default: Date.now
+  }
+});
+
 /*
 ========================
 MODELS
@@ -119,6 +133,7 @@ const PendingBuy = mongoose.model("PendingBuy", pendingBuySchema);
 const TwitchGateLink = mongoose.model("TwitchGateLink", twitchGateLinkSchema);
 const ShopItem = mongoose.model("ShopItem", shopItemSchema);
 const SellPrice = mongoose.model("SellPrice", sellPriceSchema);
+const SiteSetting = mongoose.model("SiteSetting", siteSettingSchema);
 
 const SERVER_API_KEY = process.env.SERVER_API_KEY || "mySecret123456789";
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
@@ -230,6 +245,15 @@ async function getSellPricesMap() {
     prices[item.itemType] = item.price;
     return prices;
   }, {});
+}
+
+async function getMaintenanceMode() {
+
+  const setting = await SiteSetting.findOne({
+    key: "maintenanceMode"
+  });
+
+  return setting?.value === true;
 }
 
 function createLinkCode() {
@@ -1042,6 +1066,32 @@ SELL SYSTEM
 app.post("/api/sell", async (req, res) => {
 
   const { name, slot, amount } = req.body;
+  const slotNumber = Number(slot);
+  const sellAmount = Number(amount);
+
+  const player = await Player.findOne({
+    name
+  });
+
+  const inventoryItem = player?.inventory?.find(item =>
+    Number(item.slot) === slotNumber
+  );
+
+  if (!player || !inventoryItem) {
+
+    return res.status(404).json({
+      success: false,
+      error: "Item was not found in that inventory slot"
+    });
+  }
+
+  if (!Number.isFinite(sellAmount) || sellAmount < 1 || sellAmount > Number(inventoryItem.amount || 0)) {
+
+    return res.status(400).json({
+      success: false,
+      error: "Invalid sell amount"
+    });
+  }
 
   const id =
     Date.now().toString()
@@ -1050,8 +1100,10 @@ app.post("/api/sell", async (req, res) => {
   const sellRequest = new PendingSell({
     id,
     name,
-    slot: Number(slot),
-    amount: Number(amount),
+    slot: slotNumber,
+    amount: sellAmount,
+    itemType: inventoryItem.type || inventoryItem.itemType || "",
+    nbt: inventoryItem.nbt || "",
     status: "PENDING"
   });
 
@@ -1105,9 +1157,18 @@ app.post("/api/complete-sell", async (req, res) => {
     });
   }
 
+  const sellItemType =
+    request.itemType ||
+    itemType;
+  const sellNbt =
+    request.nbt ||
+    nbt;
+  const soldAmount =
+    Number(amount || request.amount || 0);
+
   const total =
-    (await getSellPrice(itemType, nbt))
-    * Number(amount || 0);
+    (await getSellPrice(sellItemType, sellNbt))
+    * soldAmount;
 
   const player = await Player.findOne({
     name
