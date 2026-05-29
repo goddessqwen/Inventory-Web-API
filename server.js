@@ -161,6 +161,17 @@ function getItemDisplayNameFromParts(type, nbt) {
     .replace(/\b\w/g, letter => letter.toUpperCase());
 }
 
+function getFullItemCode(type, nbt) {
+
+  const cleanType = String(type || "").trim();
+  const cleanNbt = String(nbt || "").trim();
+
+  if (!cleanType) return "";
+  if (!cleanNbt || cleanType.includes("{")) return cleanType;
+
+  return `${cleanType}${cleanNbt.startsWith("{") ? cleanNbt : `{${cleanNbt}}`}`;
+}
+
 async function getSellPrice(type, nbt = "") {
 
   const cleanType = String(type || "").trim();
@@ -168,7 +179,8 @@ async function getSellPrice(type, nbt = "") {
     getGunIdFromNbt(nbt) ||
     getGunIdFromNbt(cleanType);
   const displayName = getItemDisplayNameFromParts(cleanType, nbt);
-  const keys = [gunId, displayName, cleanType].filter(Boolean);
+  const fullItemCode = getFullItemCode(cleanType, nbt);
+  const keys = [fullItemCode, gunId, displayName, cleanType].filter(Boolean);
 
   for (const key of keys) {
     const item =
@@ -953,6 +965,44 @@ app.post("/api/admin/sell-prices", async (req, res) => {
     res.json({
       success: true,
       item
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+app.delete("/api/admin/sell-prices", async (req, res) => {
+
+  try {
+
+    const { itemType } = req.body;
+    const cleanType =
+      String(itemType || "").trim();
+
+    if (!cleanType) {
+
+      return res.status(400).json({
+        success: false,
+        error: "Missing itemType"
+      });
+    }
+
+    const result = await SellPrice.deleteMany({
+      itemType: cleanType
+    });
+
+    io.emit("sellPricesUpdated");
+
+    res.json({
+      success: true,
+      deletedCount: result.deletedCount
     });
 
   } catch (err) {
