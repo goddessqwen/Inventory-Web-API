@@ -962,6 +962,66 @@ app.get("/api/admin/sell-prices", async (req, res) => {
   res.json(items);
 });
 
+app.get("/api/site-settings", async (req, res) => {
+
+  try {
+
+    res.json({
+      maintenanceMode: await getMaintenanceMode()
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+app.post("/api/admin/site-settings", async (req, res) => {
+
+  try {
+
+    const maintenanceMode = req.body?.maintenanceMode === true;
+
+    const setting = await SiteSetting.findOneAndUpdate(
+      {
+        key: "maintenanceMode"
+      },
+      {
+        key: "maintenanceMode",
+        value: maintenanceMode,
+        updatedAt: new Date()
+      },
+      {
+        new: true,
+        upsert: true
+      }
+    );
+
+    io.emit("siteSettingsUpdated", {
+      maintenanceMode
+    });
+
+    res.json({
+      success: true,
+      maintenanceMode: setting.value === true
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
 app.post("/api/admin/sell-prices", async (req, res) => {
 
   try {
