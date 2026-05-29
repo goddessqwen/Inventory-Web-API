@@ -42,6 +42,22 @@ const playerSchema = new mongoose.Schema({
   }
 });
 
+const plotSchema = new mongoose.Schema({
+  world: String,
+  chunkX: Number,
+  chunkZ: Number,
+  ownerName: String,
+  ownerUuid: String,
+  price: {
+    type: Number,
+    default: 500
+  },
+  trusted: {
+    type: [String],
+    default: []
+  }
+});
+
 const linkCodeSchema = new mongoose.Schema({
   code: String,
   uuid: String,
@@ -127,6 +143,7 @@ MODELS
 */
 
 const Player = mongoose.model("Player", playerSchema);
+const Plot = mongoose.model("Plot", plotSchema);
 const LinkCode = mongoose.model("LinkCode", linkCodeSchema);
 const PendingSell = mongoose.model("PendingSell", pendingSellSchema);
 const PendingBuy = mongoose.model("PendingBuy", pendingBuySchema);
@@ -834,6 +851,145 @@ app.get("/api/inventory/:name", async (req, res) => {
 
     res.status(500).json({
       success: false
+    });
+  }
+});
+
+/*
+========================
+PLOTS
+========================
+*/
+
+app.get("/api/plots", async (req, res) => {
+  const plots = await Plot.find();
+  res.json(plots);
+});
+
+app.get("/api/plots/:world/:chunkX/:chunkZ", async (req, res) => {
+
+  const plot = await Plot.findOne({
+    world: req.params.world,
+    chunkX: Number(req.params.chunkX),
+    chunkZ: Number(req.params.chunkZ)
+  });
+
+  if (!plot) {
+    return res.json({
+      owned: false
+    });
+  }
+
+  res.json({
+    owned: true,
+    ownerName: plot.ownerName,
+    ownerUuid: plot.ownerUuid,
+    trusted: plot.trusted
+  });
+});
+
+app.post("/api/plots/buy", async (req, res) => {
+  try {
+    const { name, uuid, world, chunkX, chunkZ } = req.body;
+
+    const existing = await Plot.findOne({ world, chunkX, chunkZ });
+
+    if (existing?.ownerName) {
+      return res.status(400).json({
+        success: false,
+        error: "Plot already owned"
+      });
+    }
+
+    const player = await Player.findOne({ name });
+
+    if (!player) {
+      return res.status(404).json({
+        success: false,
+        error: "Player not found"
+      });
+    }
+
+    const price = 500;
+
+    if (player.balance < price) {
+      return res.status(400).json({
+        success: false,
+        error: "Not enough money"
+      });
+    }
+
+    player.balance -= price;
+    await player.save();
+
+    const plot = new Plot({
+      world,
+      chunkX: Number(chunkX),
+      chunkZ: Number(chunkZ),
+      ownerName: name,
+      ownerUuid: uuid,
+      price,
+      trusted: []
+    });
+
+    await plot.save();
+
+    io.emit("plotsUpdated");
+    io.emit("balanceUpdate", {
+      name: player.name,
+      balance: player.balance
+    });
+
+    res.json({
+      success: true,
+      plot,
+      balance: player.balance
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      error: "Could not buy plot"
+    });
+  }
+});
+
+app.post("/api/plots/trust", async (req, res) => {
+  try {
+    const { ownerName, trustedName, world, chunkX, chunkZ } = req.body;
+
+    const plot = await Plot.findOne({
+      world,
+      chunkX,
+      chunkZ,
+      ownerName
+    });
+
+    if (!plot) {
+      return res.status(404).json({
+        success: false,
+        error: "Plot not found"
+      });
+    }
+
+    if (!plot.trusted.includes(trustedName)) {
+      plot.trusted.push(trustedName);
+      await plot.save();
+    }
+
+    io.emit("plotsUpdated");
+
+    res.json({
+      success: true,
+      plot
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      success: false,
+      error: "Could not trust player"
     });
   }
 });
