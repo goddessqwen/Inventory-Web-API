@@ -140,25 +140,57 @@ SELL PRICE LOOKUP
 ========================
 */
 
-async function getSellPrice(type) {
+function getGunIdFromNbt(nbt) {
+
+  const match = String(nbt || "").match(/GunId:"([^"]+)"/i);
+
+  return match ? match[1] : "";
+}
+
+function getItemDisplayNameFromParts(type, nbt) {
+
+  const gunId =
+    getGunIdFromNbt(nbt) ||
+    getGunIdFromNbt(type);
+  const value = gunId || type;
+
+  return String(value || "")
+    .split(":")
+    .pop()
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, letter => letter.toUpperCase());
+}
+
+async function getSellPrice(type, nbt = "") {
 
   const cleanType = String(type || "").trim();
+  const gunId =
+    getGunIdFromNbt(nbt) ||
+    getGunIdFromNbt(cleanType);
+  const displayName = getItemDisplayNameFromParts(cleanType, nbt);
+  const keys = [gunId, displayName, cleanType].filter(Boolean);
 
-  const item =
-    await SellPrice.findOne({
-      itemType: cleanType,
-      enabled: true
-    }) ||
-    await SellPrice.findOne({
-      itemType: cleanType.toUpperCase(),
-      enabled: true
-    }) ||
-    await SellPrice.findOne({
-      itemType: cleanType.toLowerCase(),
-      enabled: true
-    });
+  for (const key of keys) {
+    const item =
+      await SellPrice.findOne({
+        itemType: key,
+        enabled: true
+      }) ||
+      await SellPrice.findOne({
+        itemType: key.toUpperCase(),
+        enabled: true
+      }) ||
+      await SellPrice.findOne({
+        itemType: key.toLowerCase(),
+        enabled: true
+      });
 
-  return item ? item.price : 1;
+    if (item) {
+      return item.price;
+    }
+  }
+
+  return 1;
 }
 
 async function getSellPricesMap() {
@@ -982,7 +1014,7 @@ app.get("/api/pending-sells/:name", async (req, res) => {
 
 app.post("/api/complete-sell", async (req, res) => {
 
-  const { id, name, success, itemType, amount } = req.body;
+  const { id, name, success, itemType, nbt, amount } = req.body;
 
   const request = await PendingSell.findOne({
     id
@@ -1007,7 +1039,7 @@ app.post("/api/complete-sell", async (req, res) => {
   }
 
   const total =
-    (await getSellPrice(itemType))
+    (await getSellPrice(itemType, nbt))
     * Number(amount || 0);
 
   const player = await Player.findOne({
