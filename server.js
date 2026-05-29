@@ -142,10 +142,21 @@ SELL PRICE LOOKUP
 
 async function getSellPrice(type) {
 
-  const item = await SellPrice.findOne({
-    itemType: type,
-    enabled: true
-  });
+  const cleanType = String(type || "").trim();
+
+  const item =
+    await SellPrice.findOne({
+      itemType: cleanType,
+      enabled: true
+    }) ||
+    await SellPrice.findOne({
+      itemType: cleanType.toUpperCase(),
+      enabled: true
+    }) ||
+    await SellPrice.findOne({
+      itemType: cleanType.toLowerCase(),
+      enabled: true
+    });
 
   return item ? item.price : 1;
 }
@@ -883,7 +894,7 @@ app.post("/api/admin/sell-prices", async (req, res) => {
     }
 
     const cleanType =
-      String(itemType).trim().toUpperCase();
+      String(itemType).trim();
 
     let item = await SellPrice.findOne({
       itemType: cleanType
