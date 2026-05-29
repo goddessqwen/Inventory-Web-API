@@ -52,6 +52,10 @@ const plotSchema = new mongoose.Schema({
     type: Number,
     default: 500
   },
+  claimable: {
+    type: Boolean,
+    default: true
+  },
   trusted: {
     type: [String],
     default: []
@@ -857,47 +861,108 @@ app.get("/api/inventory/:name", async (req, res) => {
 
 /*
 ========================
+SHOP ROUTES
+========================
+*/
+
+/*
+========================
 PLOTS
 ========================
 */
 
 app.get("/api/plots", async (req, res) => {
-  const plots = await Plot.find();
-  res.json(plots);
+  try {
+    const plots = await Plot.find().sort({ world: 1, chunkX: 1, chunkZ: 1 });
+    res.json(plots);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: "Could not load plots" });
+  }
 });
 
 app.get("/api/plots/:world/:chunkX/:chunkZ", async (req, res) => {
-
-  const plot = await Plot.findOne({
-    world: req.params.world,
-    chunkX: Number(req.params.chunkX),
-    chunkZ: Number(req.params.chunkZ)
-  });
-
-  if (!plot) {
-    return res.json({
-      owned: false
+  try {
+    const plot = await Plot.findOne({
+      world: req.params.world,
+      chunkX: Number(req.params.chunkX),
+      chunkZ: Number(req.params.chunkZ)
     });
-  }
 
-  res.json({
-    owned: true,
-    ownerName: plot.ownerName,
-    ownerUuid: plot.ownerUuid,
-    trusted: plot.trusted
-  });
+    if (!plot) {
+      return res.json({
+        owned: false,
+        claimable: true,
+        price: 500
+      });
+    }
+
+    res.json({
+      owned: !!plot.ownerName,
+      claimable: plot.claimable !== false,
+      price: Number(plot.price) || 500,
+      ownerName: plot.ownerName || "",
+      ownerUuid: plot.ownerUuid || "",
+      trusted: plot.trusted || []
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: "Could not load plot" });
+  }
+});
+
+app.post("/api/admin/plots", async (req, res) => {
+  try {
+    const { world, chunkX, chunkZ, price, claimable } = req.body;
+
+    const plot = await Plot.findOneAndUpdate(
+      {
+        world,
+        chunkX: Number(chunkX),
+        chunkZ: Number(chunkZ)
+      },
+      {
+        world,
+        chunkX: Number(chunkX),
+        chunkZ: Number(chunkZ),
+        price: Number(price) || 500,
+        claimable: claimable !== false
+      },
+      { new: true, upsert: true }
+    );
+
+    io.emit("plotsUpdated");
+
+    res.json({ success: true, plot });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.post("/api/plots/buy", async (req, res) => {
   try {
     const { name, uuid, world, chunkX, chunkZ } = req.body;
 
-    const existing = await Plot.findOne({ world, chunkX, chunkZ });
+    const existing = await Plot.findOne({
+      world,
+      chunkX: Number(chunkX),
+      chunkZ: Number(chunkZ)
+    });
 
     if (existing?.ownerName) {
       return res.status(400).json({
         success: false,
         error: "Plot already owned"
+      });
+    }
+
+    if (existing && existing.claimable === false) {
+      return res.status(400).json({
+        success: false,
+        error: "This plot is not claimable"
       });
     }
 
@@ -910,7 +975,7 @@ app.post("/api/plots/buy", async (req, res) => {
       });
     }
 
-    const price = 500;
+    const price = Number(existing?.price) || 500;
 
     if (player.balance < price) {
       return res.status(400).json({
@@ -922,15 +987,21 @@ app.post("/api/plots/buy", async (req, res) => {
     player.balance -= price;
     await player.save();
 
-    const plot = new Plot({
-      world,
-      chunkX: Number(chunkX),
-      chunkZ: Number(chunkZ),
-      ownerName: name,
-      ownerUuid: uuid,
-      price,
-      trusted: []
-    });
+    let plot = existing;
+
+    if (!plot) {
+      plot = new Plot({
+        world,
+        chunkX: Number(chunkX),
+        chunkZ: Number(chunkZ),
+        trusted: []
+      });
+    }
+
+    plot.ownerName = name;
+    plot.ownerUuid = uuid || player.uuid || "";
+    plot.price = price;
+    plot.claimable = true;
 
     await plot.save();
 
@@ -948,10 +1019,7 @@ app.post("/api/plots/buy", async (req, res) => {
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({
-      success: false,
-      error: "Could not buy plot"
-    });
+    res.status(500).json({ success: false, error: "Could not buy plot" });
   }
 });
 
@@ -961,8 +1029,8 @@ app.post("/api/plots/trust", async (req, res) => {
 
     const plot = await Plot.findOne({
       world,
-      chunkX,
-      chunkZ,
+      chunkX: Number(chunkX),
+      chunkZ: Number(chunkZ),
       ownerName
     });
 
@@ -980,17 +1048,11 @@ app.post("/api/plots/trust", async (req, res) => {
 
     io.emit("plotsUpdated");
 
-    res.json({
-      success: true,
-      plot
-    });
+    res.json({ success: true, plot });
 
   } catch (err) {
     console.error(err);
-    res.status(500).json({
-      success: false,
-      error: "Could not trust player"
-    });
+    res.status(500).json({ success: false, error: "Could not trust player" });
   }
 });
 
