@@ -172,6 +172,20 @@ function getFullItemCode(type, nbt) {
   return `${cleanType}${cleanNbt.startsWith("{") ? cleanNbt : `{${cleanNbt}}`}`;
 }
 
+function getTaczIdentityCode(type, nbt) {
+
+  const cleanType = String(type || "").trim();
+  const gunId =
+    getGunIdFromNbt(nbt) ||
+    getGunIdFromNbt(cleanType);
+
+  if (cleanType && gunId) {
+    return `${cleanType}{GunId:"${gunId}"}`;
+  }
+
+  return "";
+}
+
 async function getSellPrice(type, nbt = "") {
 
   const cleanType = String(type || "").trim();
@@ -179,8 +193,9 @@ async function getSellPrice(type, nbt = "") {
     getGunIdFromNbt(nbt) ||
     getGunIdFromNbt(cleanType);
   const displayName = getItemDisplayNameFromParts(cleanType, nbt);
+  const taczIdentityCode = getTaczIdentityCode(cleanType, nbt);
   const fullItemCode = getFullItemCode(cleanType, nbt);
-  const keys = [fullItemCode, gunId, displayName, cleanType].filter(Boolean);
+  const keys = [taczIdentityCode, fullItemCode, gunId, displayName, cleanType].filter(Boolean);
 
   for (const key of keys) {
     const item =
