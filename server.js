@@ -62,6 +62,37 @@ const plotSchema = new mongoose.Schema({
   }
 });
 
+const regionPlotSchema = new mongoose.Schema({
+  plotId: {
+    type: String,
+    unique: true
+  },
+  world: String,
+
+  minX: Number,
+  minY: Number,
+  minZ: Number,
+
+  maxX: Number,
+  maxY: Number,
+  maxZ: Number,
+
+  price: {
+    type: Number,
+    default: 500
+  },
+  claimable: {
+    type: Boolean,
+    default: true
+  },
+  ownerName: String,
+  ownerUuid: String,
+  trusted: {
+    type: [String],
+    default: []
+  }
+});
+
 const linkCodeSchema = new mongoose.Schema({
   code: String,
   uuid: String,
@@ -148,6 +179,7 @@ MODELS
 
 const Player = mongoose.model("Player", playerSchema);
 const Plot = mongoose.model("Plot", plotSchema);
+const RegionPlot = mongoose.model("RegionPlot", regionPlotSchema);
 const LinkCode = mongoose.model("LinkCode", linkCodeSchema);
 const PendingSell = mongoose.model("PendingSell", pendingSellSchema);
 const PendingBuy = mongoose.model("PendingBuy", pendingBuySchema);
@@ -1025,23 +1057,41 @@ app.post("/api/plots/buy", async (req, res) => {
 
 app.post("/api/plots/trust", async (req, res) => {
   try {
-    const { ownerName, trustedName, world, chunkX, chunkZ } = req.body;
+    const { ownerName, ownerUuid, world, chunkX, chunkZ } = req.body;
+    const trustedName = String(req.body.trustedName || req.body.targetName || "").trim();
+
+    if (!ownerName || !trustedName || !world || chunkX === undefined || chunkZ === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing ownerName, trustedName, world, chunkX, or chunkZ"
+      });
+    }
 
     const plot = await Plot.findOne({
       world,
       chunkX: Number(chunkX),
-      chunkZ: Number(chunkZ),
-      ownerName
+      chunkZ: Number(chunkZ)
     });
 
-    if (!plot) {
+    if (!plot || !plot.ownerName) {
       return res.status(404).json({
         success: false,
         error: "Plot not found"
       });
     }
 
-    if (!plot.trusted.includes(trustedName)) {
+    const isOwner =
+      String(plot.ownerName || "").toLowerCase() === String(ownerName || "").toLowerCase() ||
+      (ownerUuid && String(plot.ownerUuid || "").toLowerCase() === String(ownerUuid || "").toLowerCase());
+
+    if (!isOwner) {
+      return res.status(403).json({
+        success: false,
+        error: "Only the plot owner can trust players"
+      });
+    }
+
+    if (!plot.trusted.some(name => String(name).toLowerCase() === trustedName.toLowerCase())) {
       plot.trusted.push(trustedName);
       await plot.save();
     }
@@ -1053,6 +1103,58 @@ app.post("/api/plots/trust", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: "Could not trust player" });
+  }
+});
+
+app.post("/api/plots/untrust", async (req, res) => {
+  try {
+    const { ownerName, ownerUuid, world, chunkX, chunkZ } = req.body;
+    const trustedName = String(req.body.trustedName || req.body.targetName || "").trim();
+
+    if (!ownerName || !trustedName || !world || chunkX === undefined || chunkZ === undefined) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing ownerName, trustedName, world, chunkX, or chunkZ"
+      });
+    }
+
+    const plot = await Plot.findOne({
+      world,
+      chunkX: Number(chunkX),
+      chunkZ: Number(chunkZ)
+    });
+
+    if (!plot || !plot.ownerName) {
+      return res.status(404).json({
+        success: false,
+        error: "Plot not found"
+      });
+    }
+
+    const isOwner =
+      String(plot.ownerName || "").toLowerCase() === String(ownerName || "").toLowerCase() ||
+      (ownerUuid && String(plot.ownerUuid || "").toLowerCase() === String(ownerUuid || "").toLowerCase());
+
+    if (!isOwner) {
+      return res.status(403).json({
+        success: false,
+        error: "Only the plot owner can remove trusted players"
+      });
+    }
+
+    plot.trusted = (plot.trusted || []).filter(
+      name => String(name).toLowerCase() !== trustedName.toLowerCase()
+    );
+
+    await plot.save();
+
+    io.emit("plotsUpdated");
+
+    res.json({ success: true, plot });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: "Could not remove trusted player" });
   }
 });
 
