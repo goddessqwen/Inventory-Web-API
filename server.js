@@ -140,6 +140,10 @@ const twitchGateLinkSchema = new mongoose.Schema({
 
 const shopItemSchema = new mongoose.Schema({
   itemType: String,
+  aliases: {
+    type: [String],
+    default: []
+  },
   displayName: String,
   price: Number,
   imageUrl: String,
@@ -1274,6 +1278,107 @@ app.delete("/api/admin/region-plots/:plotId", async (req, res) => {
   }
 });
 
+app.post("/api/region-plots/trust", async (req, res) => {
+  try {
+    const { plotId, ownerName, ownerUuid } = req.body;
+    const trustedName = String(req.body.trustedName || req.body.targetName || "").trim();
+    const cleanPlotId = String(plotId || "").trim();
+
+    if (!cleanPlotId || !ownerName || !trustedName) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing plotId, ownerName, or trustedName"
+      });
+    }
+
+    const plot = await RegionPlot.findOne({ plotId: cleanPlotId });
+
+    if (!plot || !plot.ownerName) {
+      return res.status(404).json({
+        success: false,
+        error: "Plot not found"
+      });
+    }
+
+    const isOwner =
+      String(plot.ownerName || "").toLowerCase() === String(ownerName || "").toLowerCase() ||
+      (ownerUuid && String(plot.ownerUuid || "").toLowerCase() === String(ownerUuid || "").toLowerCase());
+
+    if (!isOwner) {
+      return res.status(403).json({
+        success: false,
+        error: "Only the plot owner can trust players"
+      });
+    }
+
+    if (!plot.trusted.some(name => String(name).toLowerCase() === trustedName.toLowerCase())) {
+      plot.trusted.push(trustedName);
+      await plot.save();
+    }
+
+    io.emit("regionPlotsUpdated");
+
+    res.json({ success: true, plot });
+
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: "Could not trust player"
+    });
+  }
+});
+
+app.post("/api/region-plots/untrust", async (req, res) => {
+  try {
+    const { plotId, ownerName, ownerUuid } = req.body;
+    const trustedName = String(req.body.trustedName || req.body.targetName || "").trim();
+    const cleanPlotId = String(plotId || "").trim();
+
+    if (!cleanPlotId || !ownerName || !trustedName) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing plotId, ownerName, or trustedName"
+      });
+    }
+
+    const plot = await RegionPlot.findOne({ plotId: cleanPlotId });
+
+    if (!plot || !plot.ownerName) {
+      return res.status(404).json({
+        success: false,
+        error: "Plot not found"
+      });
+    }
+
+    const isOwner =
+      String(plot.ownerName || "").toLowerCase() === String(ownerName || "").toLowerCase() ||
+      (ownerUuid && String(plot.ownerUuid || "").toLowerCase() === String(ownerUuid || "").toLowerCase());
+
+    if (!isOwner) {
+      return res.status(403).json({
+        success: false,
+        error: "Only the plot owner can remove trusted players"
+      });
+    }
+
+    plot.trusted = (plot.trusted || []).filter(
+      name => String(name).toLowerCase() !== trustedName.toLowerCase()
+    );
+
+    await plot.save();
+
+    io.emit("regionPlotsUpdated");
+
+    res.json({ success: true, plot });
+
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: "Could not remove trusted player"
+    });
+  }
+});
+
 app.post("/api/region-plots/buy", async (req, res) => {
   try {
     const { plotId, name, uuid } = req.body;
@@ -1499,6 +1604,59 @@ app.post("/api/admin/shop", async (req, res) => {
   }
 });
 
+app.post("/api/admin/shop/upsert", async (req, res) => {
+
+  try {
+
+    const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
+    const cleanType = String(itemType || "").trim();
+    const aliases = Array.isArray(req.body.aliases)
+      ? req.body.aliases.map(alias => String(alias || "").trim()).filter(Boolean)
+      : [];
+
+    if (!cleanType || price === undefined) {
+
+      return res.status(400).json({
+        success: false,
+        error: "Missing itemType or price"
+      });
+    }
+
+    const item = await ShopItem.findOneAndUpdate(
+      { itemType: cleanType },
+      {
+        itemType: cleanType,
+        aliases: [...new Set([cleanType, ...aliases])],
+        displayName: displayName || "",
+        price: Number(price),
+        imageUrl: imageUrl || "",
+        iconUrl: iconUrl || "",
+        enabled: enabled !== false
+      },
+      {
+        new: true,
+        upsert: true
+      }
+    );
+
+    io.emit("shopUpdated");
+
+    res.json({
+      success: true,
+      item
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
 app.put("/api/admin/shop/:id", async (req, res) => {
 
   try {
@@ -1544,6 +1702,44 @@ app.delete("/api/admin/shop/:id", async (req, res) => {
   res.json({
     success: true
   });
+});
+
+app.delete("/api/admin/shop/by-type/:itemType", async (req, res) => {
+
+  try {
+
+    const cleanType = String(req.params.itemType || "").trim();
+
+    if (!cleanType) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing itemType"
+      });
+    }
+
+    const result = await ShopItem.deleteMany({
+      $or: [
+        { itemType: cleanType },
+        { aliases: cleanType }
+      ]
+    });
+
+    io.emit("shopUpdated");
+
+    res.json({
+      success: true,
+      deletedCount: result.deletedCount
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
 });
 
 /*
@@ -1870,8 +2066,15 @@ app.post("/api/buy", async (req, res) => {
     const buyAmount = Number(amount);
 
     const shopItem = await ShopItem.findOne({
-      itemType: cleanItemType,
-      enabled: true
+      enabled: true,
+      $or: [
+        { itemType: cleanItemType },
+        { aliases: cleanItemType },
+        { itemType: cleanItemType.toUpperCase() },
+        { aliases: cleanItemType.toUpperCase() },
+        { itemType: cleanItemType.toLowerCase() },
+        { aliases: cleanItemType.toLowerCase() }
+      ]
     });
 
     if (!shopItem) {
