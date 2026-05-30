@@ -67,6 +67,7 @@ const regionPlotSchema = new mongoose.Schema({
     type: String,
     unique: true
   },
+  displayName: String,
   world: String,
 
   minX: Number,
@@ -1190,6 +1191,7 @@ app.post("/api/admin/region-plots", async (req, res) => {
   try {
     const {
       plotId,
+      displayName,
       world,
       minX,
       minY,
@@ -1212,6 +1214,7 @@ app.post("/api/admin/region-plots", async (req, res) => {
       { plotId },
       {
         plotId,
+        displayName: String(displayName || "").trim(),
         world,
         minX: Number(minX),
         minY: Number(minY),
@@ -1274,6 +1277,58 @@ app.delete("/api/admin/region-plots/:plotId", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Could not remove region plot"
+    });
+  }
+});
+
+app.patch("/api/admin/region-plots/:plotId", async (req, res) => {
+  try {
+    const plotId = String(req.params.plotId || "").trim();
+
+    if (!plotId) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing plotId"
+      });
+    }
+
+    const update = {};
+
+    if (req.body.displayName !== undefined || req.body.name !== undefined) {
+      update.displayName = String(req.body.displayName ?? req.body.name ?? "").trim();
+    }
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing fields to update"
+      });
+    }
+
+    const plot = await RegionPlot.findOneAndUpdate(
+      { plotId },
+      update,
+      { new: true }
+    );
+
+    if (!plot) {
+      return res.status(404).json({
+        success: false,
+        error: "Plot not found"
+      });
+    }
+
+    io.emit("regionPlotsUpdated");
+
+    res.json({
+      success: true,
+      plot
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: "Could not update region plot"
     });
   }
 });
