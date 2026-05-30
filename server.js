@@ -1239,6 +1239,41 @@ app.post("/api/admin/region-plots", async (req, res) => {
   }
 });
 
+app.delete("/api/admin/region-plots/:plotId", async (req, res) => {
+  try {
+    const plotId = String(req.params.plotId || "").trim();
+
+    if (!plotId) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing plotId"
+      });
+    }
+
+    const plot = await RegionPlot.findOneAndDelete({ plotId });
+
+    if (!plot) {
+      return res.status(404).json({
+        success: false,
+        error: "Plot not found"
+      });
+    }
+
+    io.emit("regionPlotsUpdated");
+
+    res.json({
+      success: true,
+      plot
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: "Could not remove region plot"
+    });
+  }
+});
+
 app.post("/api/region-plots/buy", async (req, res) => {
   try {
     const { plotId, name, uuid } = req.body;
@@ -1313,6 +1348,90 @@ app.post("/api/region-plots/buy", async (req, res) => {
     res.status(500).json({
       success: false,
       error: "Could not buy region plot"
+    });
+  }
+});
+
+app.post("/api/region-plots/sell", async (req, res) => {
+  try {
+    const { plotId, name, uuid } = req.body;
+
+    const cleanPlotId = String(plotId || "").trim();
+    const cleanName = String(name || "").trim();
+    const cleanUuid = String(uuid || "").trim();
+
+    if (!cleanPlotId || !cleanName) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing plotId or name"
+      });
+    }
+
+    const plot = await RegionPlot.findOne({ plotId: cleanPlotId });
+
+    if (!plot) {
+      return res.status(404).json({
+        success: false,
+        error: "Plot not found"
+      });
+    }
+
+    if (!plot.ownerName) {
+      return res.status(400).json({
+        success: false,
+        error: "Plot is not owned"
+      });
+    }
+
+    const isOwner =
+      String(plot.ownerName || "").toLowerCase() === cleanName.toLowerCase() ||
+      (cleanUuid && String(plot.ownerUuid || "").toLowerCase() === cleanUuid.toLowerCase());
+
+    if (!isOwner) {
+      return res.status(403).json({
+        success: false,
+        error: "Only the plot owner can sell this plot"
+      });
+    }
+
+    const player = await Player.findOne({ name: cleanName });
+
+    if (!player) {
+      return res.status(404).json({
+        success: false,
+        error: "Player not found"
+      });
+    }
+
+    const refund = Number(plot.price) || 500;
+
+    player.balance += refund;
+    await player.save();
+
+    plot.ownerName = "";
+    plot.ownerUuid = "";
+    plot.trusted = [];
+    plot.claimable = true;
+
+    await plot.save();
+
+    io.emit("regionPlotsUpdated");
+    io.emit("balanceUpdate", {
+      name: player.name,
+      balance: player.balance
+    });
+
+    res.json({
+      success: true,
+      plot,
+      refund,
+      balance: player.balance
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: "Could not sell region plot"
     });
   }
 });
