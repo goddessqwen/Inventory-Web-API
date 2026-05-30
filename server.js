@@ -439,17 +439,6 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-app.get("/api/test-region", (req, res) => {
-  res.json({
-    success: true,
-    message: "Region test route works"
-  });
-});
-
-app.get("/api/region-plots", async (req, res) => {
-  res.json([]);
-});
-
 /*
 ========================
 TWITCH FOLLOWER GATE
@@ -1168,7 +1157,160 @@ app.post("/api/plots/untrust", async (req, res) => {
     res.status(500).json({ success: false, error: "Could not remove trusted player" });
   }
 });
+/*
+========================
+REGION PLOTS
+========================
+*/
 
+app.get("/api/test-region", (req, res) => {
+  res.json({
+    success: true,
+    message: "Region routes loaded"
+  });
+});
+
+app.get("/api/region-plots", async (req, res) => {
+  try {
+    const plots = await RegionPlot.find().sort({ plotId: 1 });
+    res.json(plots);
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: "Could not load region plots"
+    });
+  }
+});
+
+app.post("/api/admin/region-plots", async (req, res) => {
+  try {
+    const {
+      plotId,
+      world,
+      minX,
+      minY,
+      minZ,
+      maxX,
+      maxY,
+      maxZ,
+      price,
+      claimable
+    } = req.body;
+
+    if (!plotId || !world) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing plotId or world"
+      });
+    }
+
+    const plot = await RegionPlot.findOneAndUpdate(
+      { plotId },
+      {
+        plotId,
+        world,
+        minX: Number(minX),
+        minY: Number(minY),
+        minZ: Number(minZ),
+        maxX: Number(maxX),
+        maxY: Number(maxY),
+        maxZ: Number(maxZ),
+        price: Number(price) || 500,
+        claimable: claimable !== false
+      },
+      {
+        new: true,
+        upsert: true
+      }
+    );
+
+    io.emit("regionPlotsUpdated");
+
+    res.json({
+      success: true,
+      plot
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+app.post("/api/region-plots/buy", async (req, res) => {
+  try {
+    const { plotId, name, uuid } = req.body;
+
+    const plot = await RegionPlot.findOne({ plotId });
+
+    if (!plot) {
+      return res.status(404).json({
+        success: false,
+        error: "Plot not found"
+      });
+    }
+
+    if (plot.ownerName) {
+      return res.status(400).json({
+        success: false,
+        error: "Plot already owned"
+      });
+    }
+
+    if (plot.claimable === false) {
+      return res.status(400).json({
+        success: false,
+        error: "This plot is not claimable"
+      });
+    }
+
+    const player = await Player.findOne({ name });
+
+    if (!player) {
+      return res.status(404).json({
+        success: false,
+        error: "Player not found"
+      });
+    }
+
+    const price = Number(plot.price) || 500;
+
+    if (player.balance < price) {
+      return res.status(400).json({
+        success: false,
+        error: "Not enough money"
+      });
+    }
+
+    player.balance -= price;
+    await player.save();
+
+    plot.ownerName = name;
+    plot.ownerUuid = uuid || player.uuid || "";
+
+    await plot.save();
+
+    io.emit("regionPlotsUpdated");
+    io.emit("balanceUpdate", {
+      name: player.name,
+      balance: player.balance
+    });
+
+    res.json({
+      success: true,
+      plot,
+      balance: player.balance
+    });
+
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: "Could not buy region plot"
+    });
+  }
+});
 /*
 ========================
 SHOP ROUTES
