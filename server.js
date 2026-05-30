@@ -1291,6 +1291,11 @@ app.post("/api/region-plots/buy", async (req, res) => {
     plot.ownerUuid = uuid || player.uuid || "";
 
     await plot.save();
+	console.log("Region plot bought:", {
+  plotId: plot.plotId,
+  ownerName: plot.ownerName,
+  ownerUuid: plot.ownerUuid
+});
 
     io.emit("regionPlotsUpdated");
     io.emit("balanceUpdate", {
