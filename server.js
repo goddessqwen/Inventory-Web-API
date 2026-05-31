@@ -145,6 +145,10 @@ const shopItemSchema = new mongoose.Schema({
     type: [String],
     default: []
   },
+  category: {
+    type: String,
+    default: "misc"
+  },
   displayName: String,
   price: Number,
   imageUrl: String,
@@ -1605,14 +1609,14 @@ app.get("/api/shop", async (req, res) => {
 
   const items = await ShopItem.find({
     enabled: true
-  });
+  }).sort({ category: 1, displayName: 1, itemType: 1 });
 
   res.json(items);
 });
 
 app.get("/api/admin/shop", async (req, res) => {
 
-  const items = await ShopItem.find();
+  const items = await ShopItem.find().sort({ category: 1, displayName: 1, itemType: 1 });
 
   res.json(items);
 });
@@ -1622,6 +1626,7 @@ app.post("/api/admin/shop", async (req, res) => {
   try {
 
     const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
+    const category = String(req.body.category || "misc").trim().toLowerCase();
 
     if (!itemType || price === undefined) {
 
@@ -1633,6 +1638,7 @@ app.post("/api/admin/shop", async (req, res) => {
 
     const item = new ShopItem({
       itemType: itemType,
+      category: category || "misc",
       displayName: displayName || "",
       price: Number(price),
       imageUrl: imageUrl || "",
@@ -1664,6 +1670,7 @@ app.post("/api/admin/shop/upsert", async (req, res) => {
   try {
 
     const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
+    const category = String(req.body.category || "misc").trim().toLowerCase();
     const cleanType = String(itemType || "").trim();
     const aliases = Array.isArray(req.body.aliases)
       ? req.body.aliases.map(alias => String(alias || "").trim()).filter(Boolean)
@@ -1682,6 +1689,7 @@ app.post("/api/admin/shop/upsert", async (req, res) => {
       {
         itemType: cleanType,
         aliases: [...new Set([cleanType, ...aliases])],
+        category: category || "misc",
         displayName: displayName || "",
         price: Number(price),
         imageUrl: imageUrl || "",
@@ -1717,11 +1725,13 @@ app.put("/api/admin/shop/:id", async (req, res) => {
   try {
 
     const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
+    const category = String(req.body.category || "misc").trim().toLowerCase();
 
     const item = await ShopItem.findByIdAndUpdate(
       req.params.id,
       {
         itemType: itemType,
+        category: category || "misc",
         displayName: displayName || "",
         price: Number(price),
         imageUrl: imageUrl || "",
