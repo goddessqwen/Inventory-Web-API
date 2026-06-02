@@ -900,6 +900,71 @@ app.get("/api/inventory/:name", async (req, res) => {
   }
 });
 
+app.post("/api/player/charge", async (req, res) => {
+
+  try {
+
+    if (!requireServerKey(req, res)) return;
+
+    const name = String(req.body?.name || "").trim();
+    const amount = Number(req.body?.amount);
+    const reason = String(req.body?.reason || "charge").trim();
+
+    if (!name || !Number.isFinite(amount) || amount <= 0) {
+
+      return res.status(400).json({
+        success: false,
+        error: "Missing name or invalid amount"
+      });
+    }
+
+    const player = await Player.findOne({
+      name
+    });
+
+    if (!player) {
+
+      return res.status(404).json({
+        success: false,
+        error: "Player not found"
+      });
+    }
+
+    if ((Number(player.balance) || 0) < amount) {
+
+      return res.status(400).json({
+        success: false,
+        error: "Not enough money",
+        balance: Number(player.balance) || 0
+      });
+    }
+
+    player.balance = (Number(player.balance) || 0) - amount;
+
+    await player.save();
+
+    io.emit("balanceUpdate", {
+      name: player.name,
+      balance: player.balance,
+      reason
+    });
+
+    res.json({
+      success: true,
+      balance: player.balance
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
 /*
 ========================
 SHOP ROUTES
