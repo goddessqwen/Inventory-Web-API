@@ -208,6 +208,35 @@ const talentApplicationSchema = new mongoose.Schema({
   timestamps: true
 });
 
+const clipAnalysisJobSchema = new mongoose.Schema({
+  id: {
+    type: String,
+    unique: true
+  },
+  channel: String,
+  vodId: String,
+  vodTitle: String,
+  vodUrl: String,
+  thumbnailUrl: String,
+  durationSeconds: Number,
+  maxClips: Number,
+  status: {
+    type: String,
+    default: "complete"
+  },
+  analysisMode: {
+    type: String,
+    default: "metadata"
+  },
+  candidates: {
+    type: Array,
+    default: []
+  },
+  error: String
+}, {
+  timestamps: true
+});
+
 /*
 ========================
 MODELS
@@ -225,6 +254,7 @@ const ShopItem = mongoose.model("ShopItem", shopItemSchema);
 const SellPrice = mongoose.model("SellPrice", sellPriceSchema);
 const SiteSetting = mongoose.model("SiteSetting", siteSettingSchema);
 const TalentApplication = mongoose.model("TalentApplication", talentApplicationSchema);
+const ClipAnalysisJob = mongoose.model("ClipAnalysisJob", clipAnalysisJobSchema);
 
 const SERVER_API_KEY = process.env.SERVER_API_KEY || "mySecret123456789";
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
@@ -425,6 +455,133 @@ async function twitchFetch(url, accessToken) {
   return data;
 }
 
+let twitchAppToken = null;
+let twitchAppTokenExpiresAt = 0;
+
+function parseTwitchDuration(duration) {
+  const matches = String(duration || "").match(/(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/i);
+
+  if (!matches) return 0;
+
+  return ((Number(matches[1]) || 0) * 3600)
+    + ((Number(matches[2]) || 0) * 60)
+    + (Number(matches[3]) || 0);
+}
+
+function formatClipTime(seconds) {
+  const safeSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const secs = safeSeconds % 60;
+
+  return [
+    hours,
+    String(minutes).padStart(2, "0"),
+    String(secs).padStart(2, "0")
+  ].join(":");
+}
+
+async function getTwitchAppToken() {
+  if (twitchAppToken && Date.now() < twitchAppTokenExpiresAt) {
+    return twitchAppToken;
+  }
+
+  if (!TWITCH_CLIENT_ID || !TWITCH_CLIENT_SECRET) {
+    throw new Error("Twitch app credentials are not configured");
+  }
+
+  const response = await fetch("https://id.twitch.tv/oauth2/token", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    body: new URLSearchParams({
+      client_id: TWITCH_CLIENT_ID,
+      client_secret: TWITCH_CLIENT_SECRET,
+      grant_type: "client_credentials"
+    })
+  });
+  const data = await response.json();
+
+  if (!response.ok || !data.access_token) {
+    throw new Error(data.message || data.error_description || "Could not get Twitch app token");
+  }
+
+  twitchAppToken = data.access_token;
+  twitchAppTokenExpiresAt = Date.now() + (Math.max(60, Number(data.expires_in) || 3600) - 30) * 1000;
+
+  return twitchAppToken;
+}
+
+async function twitchAppFetch(url) {
+  const accessToken = await getTwitchAppToken();
+  return twitchFetch(url, accessToken);
+}
+
+async function getLatestTwitchVod(channel) {
+  const cleanChannel = String(channel || TWITCH_CHANNEL || "").trim().replace(/^@/, "");
+
+  if (!cleanChannel) {
+    throw new Error("Missing Twitch channel");
+  }
+
+  const userData = await twitchAppFetch(
+    `https://api.twitch.tv/helix/users?login=${encodeURIComponent(cleanChannel)}`
+  );
+  const twitchUser = userData.data?.[0];
+
+  if (!twitchUser) {
+    throw new Error(`Could not find Twitch channel ${cleanChannel}`);
+  }
+
+  const videosData = await twitchAppFetch(
+    `https://api.twitch.tv/helix/videos?user_id=${encodeURIComponent(twitchUser.id)}&type=archive&first=1`
+  );
+  const vod = videosData.data?.[0];
+
+  if (!vod) {
+    throw new Error(`No recent Twitch VOD found for ${cleanChannel}`);
+  }
+
+  return {
+    ...vod,
+    channel: cleanChannel,
+    durationSeconds: parseTwitchDuration(vod.duration)
+  };
+}
+
+function buildClipCandidates(vod, maxClips = 50) {
+  const totalSeconds = Math.max(60, Number(vod.durationSeconds) || 0);
+  const clipCount = Math.max(1, Math.min(50, Number(maxClips) || 50));
+  const usableStart = Math.min(300, Math.floor(totalSeconds * 0.08));
+  const usableEnd = Math.max(usableStart + 60, totalSeconds - Math.min(300, Math.floor(totalSeconds * 0.08)));
+  const span = Math.max(60, usableEnd - usableStart);
+  const step = Math.max(45, Math.floor(span / clipCount));
+  const title = String(vod.title || "Stream moment").trim();
+  const game = String(vod.game_name || "stream").trim();
+
+  return Array.from({ length: clipCount }).map((_, index) => {
+    const start = Math.min(usableEnd - 30, usableStart + (index * step));
+    const duration = index % 5 === 0 ? 45 : index % 3 === 0 ? 35 : 25;
+    const score = Math.max(60, 96 - Math.floor(index * 0.7));
+
+    return {
+      rank: index + 1,
+      title: `${game} highlight ${index + 1}`,
+      startSeconds: start,
+      endSeconds: Math.min(totalSeconds, start + duration),
+      startTime: formatClipTime(start),
+      endTime: formatClipTime(Math.min(totalSeconds, start + duration)),
+      suggestedDurationSeconds: duration,
+      score,
+      reason: index === 0
+        ? `Opening high-interest moment candidate from "${title}".`
+        : `Candidate spaced through the VOD for AI/human review; scan chat/audio/video here for laughs, wins, surprises, or big reactions.`,
+      status: "suggested"
+    };
+  });
+}
+
 /*
 ========================
 DEFAULT SHOP ITEMS
@@ -475,6 +632,106 @@ app.get("/api/health", (req, res) => {
     service: "InventoryWebAPI",
     twitchGate: true
   });
+});
+
+/*
+========================
+AI CLIP ANALYSIS
+========================
+*/
+
+app.post("/api/admin/clip-analysis/latest", async (req, res) => {
+
+  try {
+
+    const channel = String(req.body?.channel || TWITCH_CHANNEL || "").trim();
+    const maxClips = Math.max(1, Math.min(50, Number(req.body?.maxClips) || 50));
+    const vod = await getLatestTwitchVod(channel);
+    const candidates = buildClipCandidates(vod, maxClips);
+    const id = `clip_${Date.now()}_${Math.floor(Math.random() * 9999)}`;
+
+    const job = new ClipAnalysisJob({
+      id,
+      channel: vod.channel,
+      vodId: vod.id,
+      vodTitle: vod.title || "",
+      vodUrl: vod.url || `https://www.twitch.tv/videos/${vod.id}`,
+      thumbnailUrl: String(vod.thumbnail_url || "").replace("%{width}", "640").replace("%{height}", "360"),
+      durationSeconds: vod.durationSeconds,
+      maxClips,
+      status: "complete",
+      analysisMode: "metadata",
+      candidates
+    });
+
+    await job.save();
+
+    res.json({
+      success: true,
+      job
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message || "Could not analyze latest stream"
+    });
+  }
+});
+
+app.get("/api/admin/clip-analysis", async (req, res) => {
+
+  try {
+
+    const jobs = await ClipAnalysisJob.find()
+      .sort({ createdAt: -1 })
+      .limit(Math.min(Number(req.query.limit) || 20, 100));
+
+    res.json(jobs);
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+app.get("/api/admin/clip-analysis/:id", async (req, res) => {
+
+  try {
+
+    const job = await ClipAnalysisJob.findOne({
+      id: req.params.id
+    });
+
+    if (!job) {
+      return res.status(404).json({
+        success: false,
+        error: "Clip analysis job not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      job
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
 });
 
 /*
