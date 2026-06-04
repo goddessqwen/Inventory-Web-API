@@ -33,6 +33,10 @@ SCHEMAS
 */
 
 const playerSchema = new mongoose.Schema({
+  serverId: {
+    type: String,
+    default: "main"
+  },
   uuid: String,
   name: String,
   inventory: Array,
@@ -104,6 +108,10 @@ const linkCodeSchema = new mongoose.Schema({
 
 const pendingSellSchema = new mongoose.Schema({
   id: String,
+  serverId: {
+    type: String,
+    default: "main"
+  },
   name: String,
   slot: Number,
   amount: Number,
@@ -114,6 +122,10 @@ const pendingSellSchema = new mongoose.Schema({
 
 const pendingBuySchema = new mongoose.Schema({
   id: String,
+  serverId: {
+    type: String,
+    default: "main"
+  },
   name: String,
   itemType: String,
   amount: Number,
@@ -178,6 +190,22 @@ const siteSettingSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   }
+});
+
+const minecraftServerSchema = new mongoose.Schema({
+  serverId: {
+    type: String,
+    unique: true
+  },
+  name: String,
+  address: String,
+  enabled: {
+    type: Boolean,
+    default: true
+  },
+  lastSeenAt: Date
+}, {
+  timestamps: true
 });
 
 const talentApplicationSchema = new mongoose.Schema({
@@ -253,6 +281,7 @@ const TwitchGateLink = mongoose.model("TwitchGateLink", twitchGateLinkSchema);
 const ShopItem = mongoose.model("ShopItem", shopItemSchema);
 const SellPrice = mongoose.model("SellPrice", sellPriceSchema);
 const SiteSetting = mongoose.model("SiteSetting", siteSettingSchema);
+const MinecraftServer = mongoose.model("MinecraftServer", minecraftServerSchema);
 const TalentApplication = mongoose.model("TalentApplication", talentApplicationSchema);
 const ClipAnalysisJob = mongoose.model("ClipAnalysisJob", clipAnalysisJobSchema);
 
@@ -375,6 +404,60 @@ async function getMaintenanceMode() {
   });
 
   return setting?.value === true;
+}
+
+function normalizeServerId(serverId) {
+  const clean = String(serverId || "main").trim().toLowerCase();
+  return clean
+    .replace(/[^a-z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "") || "main";
+}
+
+function getRequestServerId(req) {
+  return normalizeServerId(req.body?.serverId || req.query?.serverId || req.headers["x-server-id"]);
+}
+
+function getPlayerServerFilter(name, serverId) {
+  const cleanServerId = normalizeServerId(serverId);
+  const filter = { name };
+
+  if (cleanServerId === "main") {
+    filter.$or = [
+      { serverId: "main" },
+      { serverId: { $exists: false } },
+      { serverId: "" },
+      { serverId: null }
+    ];
+  } else {
+    filter.serverId = cleanServerId;
+  }
+
+  return filter;
+}
+
+async function upsertMinecraftServer({ serverId, name, address } = {}) {
+  const cleanServerId = normalizeServerId(serverId);
+  const update = {
+    serverId: cleanServerId,
+    lastSeenAt: new Date()
+  };
+
+  if (name !== undefined && String(name || "").trim()) {
+    update.name = String(name).trim();
+  }
+
+  if (address !== undefined && String(address || "").trim()) {
+    update.address = String(address).trim();
+  }
+
+  await MinecraftServer.findOneAndUpdate(
+    { serverId: cleanServerId },
+    { $set: update, $setOnInsert: { enabled: true } },
+    { upsert: true, new: true }
+  );
+
+  return cleanServerId;
 }
 
 function createLinkCode() {
@@ -632,6 +715,87 @@ app.get("/api/health", (req, res) => {
     service: "InventoryWebAPI",
     twitchGate: true
   });
+});
+
+/*
+========================
+MINECRAFT SERVERS
+========================
+*/
+
+app.get("/api/minecraft-servers", async (req, res) => {
+
+  try {
+
+    const servers = await MinecraftServer.find({
+      enabled: true
+    }).sort({ name: 1, serverId: 1 });
+
+    if (servers.length === 0) {
+      return res.json([{
+        serverId: "main",
+        name: "Main Server",
+        address: "",
+        enabled: true
+      }]);
+    }
+
+    res.json(servers);
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: "Could not load Minecraft servers"
+    });
+  }
+});
+
+app.post("/api/admin/minecraft-servers", async (req, res) => {
+
+  try {
+
+    const serverId = normalizeServerId(req.body?.serverId);
+    const name = String(req.body?.name || serverId).trim();
+    const address = String(req.body?.address || "").trim();
+
+    if (!serverId) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing serverId"
+      });
+    }
+
+    const server = await MinecraftServer.findOneAndUpdate(
+      { serverId },
+      {
+        serverId,
+        name,
+        address,
+        enabled: req.body?.enabled !== false,
+        lastSeenAt: new Date()
+      },
+      { new: true, upsert: true }
+    );
+
+    io.emit("minecraftServersUpdated");
+
+    res.json({
+      success: true,
+      server
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
 });
 
 /*
@@ -1265,14 +1429,18 @@ app.post("/api/inventory", async (req, res) => {
   try {
 
     const data = req.body;
-
-    let player = await Player.findOne({
-      name: data.name
+    const serverId = await upsertMinecraftServer({
+      serverId: data.serverId,
+      name: data.serverName,
+      address: data.serverAddress
     });
+
+    let player = await Player.findOne(getPlayerServerFilter(data.name, serverId));
 
     if (!player) {
 
       player = new Player({
+        serverId,
         uuid: data.uuid,
         name: data.name,
         inventory: data.inventory,
@@ -1281,6 +1449,7 @@ app.post("/api/inventory", async (req, res) => {
 
     } else {
 
+      player.serverId = serverId;
       player.uuid = data.uuid;
       player.inventory = data.inventory;
     }
@@ -1288,6 +1457,7 @@ app.post("/api/inventory", async (req, res) => {
     await player.save();
 
     io.emit("inventoryUpdate", {
+      serverId,
       name: player.name,
       inventory: player.inventory,
       balance: player.balance
@@ -1311,9 +1481,11 @@ app.get("/api/players", async (req, res) => {
 
   try {
 
-    const players = await Player.find({}).sort({ name: 1 });
+    const serverId = getRequestServerId(req);
+    const players = await Player.find({ serverId }).sort({ name: 1 });
 
     res.json(players.map(player => ({
+      serverId: player.serverId || "main",
       uuid: player.uuid,
       name: player.name,
       balance: player.balance || 0,
@@ -1335,9 +1507,8 @@ app.get("/api/inventory/:name", async (req, res) => {
 
   try {
 
-    const player = await Player.findOne({
-      name: req.params.name
-    });
+    const serverId = getRequestServerId(req);
+    const player = await Player.findOne(getPlayerServerFilter(req.params.name, serverId));
 
     if (!player) {
 
@@ -1350,6 +1521,7 @@ app.get("/api/inventory/:name", async (req, res) => {
 
     res.json({
       uuid: player.uuid,
+      serverId: player.serverId || serverId,
       name: player.name,
       inventory: player.inventory,
       balance: player.balance,
@@ -1373,6 +1545,7 @@ app.post("/api/player/charge", async (req, res) => {
     if (!requireServerKey(req, res)) return;
 
     const name = String(req.body?.name || "").trim();
+    const serverId = getRequestServerId(req);
     const amount = Number(req.body?.amount);
     const reason = String(req.body?.reason || "charge").trim();
 
@@ -1384,9 +1557,7 @@ app.post("/api/player/charge", async (req, res) => {
       });
     }
 
-    const player = await Player.findOne({
-      name
-    });
+    const player = await Player.findOne(getPlayerServerFilter(name, serverId));
 
     if (!player) {
 
@@ -1410,6 +1581,7 @@ app.post("/api/player/charge", async (req, res) => {
     await player.save();
 
     io.emit("balanceUpdate", {
+      serverId,
       name: player.name,
       balance: player.balance,
       reason
@@ -2515,12 +2687,11 @@ SELL SYSTEM
 app.post("/api/sell", async (req, res) => {
 
   const { name, slot, amount } = req.body;
+  const serverId = getRequestServerId(req);
   const slotNumber = Number(slot);
   const sellAmount = Number(amount);
 
-  const player = await Player.findOne({
-    name
-  });
+  const player = await Player.findOne(getPlayerServerFilter(name, serverId));
 
   const inventoryItem = player?.inventory?.find(item =>
     Number(item.slot) === slotNumber
@@ -2548,6 +2719,7 @@ app.post("/api/sell", async (req, res) => {
 
   const sellRequest = new PendingSell({
     id,
+    serverId,
     name,
     slot: slotNumber,
     amount: sellAmount,
@@ -2566,8 +2738,10 @@ app.post("/api/sell", async (req, res) => {
 
 app.get("/api/pending-sells/:name", async (req, res) => {
 
+  const serverId = getRequestServerId(req);
   const requests = await PendingSell.find({
     name: req.params.name,
+    serverId,
     status: "PENDING"
   });
 
@@ -2619,15 +2793,17 @@ app.post("/api/complete-sell", async (req, res) => {
     (await getSellPrice(sellItemType, sellNbt))
     * soldAmount;
 
-  const player = await Player.findOne({
-    name
-  });
+  const player = await Player.findOne(getPlayerServerFilter(
+    name,
+    request.serverId || getRequestServerId(req)
+  ));
 
   player.balance += total;
 
   await player.save();
 
   io.emit("balanceUpdate", {
+    serverId: player.serverId || request.serverId || "main",
     name: player.name,
     balance: player.balance
   });
@@ -2654,6 +2830,7 @@ app.post("/api/buy", async (req, res) => {
   try {
 
     const { name, itemType, amount } = req.body;
+    const serverId = getRequestServerId(req);
 
     // KEEP NBT EXACTLY AS TYPED
     const cleanItemType =
@@ -2689,9 +2866,7 @@ app.post("/api/buy", async (req, res) => {
       });
     }
 
-    const player = await Player.findOne({
-      name
-    });
+    const player = await Player.findOne(getPlayerServerFilter(name, serverId));
 
     if (!player) {
 
@@ -2717,6 +2892,7 @@ app.post("/api/buy", async (req, res) => {
     await player.save();
 
     io.emit("balanceUpdate", {
+      serverId,
       name: player.name,
       balance: player.balance
     });
@@ -2727,6 +2903,7 @@ app.post("/api/buy", async (req, res) => {
 
     const buyRequest = new PendingBuy({
       id,
+      serverId,
       name,
       itemType: cleanItemType,
       amount: buyAmount,
@@ -2754,8 +2931,10 @@ app.post("/api/buy", async (req, res) => {
 
 app.get("/api/pending-buys/:name", async (req, res) => {
 
+  const serverId = getRequestServerId(req);
   const requests = await PendingBuy.find({
     name: req.params.name,
+    serverId,
     status: "PENDING"
   });
 
@@ -2787,9 +2966,10 @@ app.post("/api/complete-buy", async (req, res) => {
 
     if (!success) {
 
-      const player = await Player.findOne({
-        name: request.name
-      });
+      const player = await Player.findOne(getPlayerServerFilter(
+        request.name,
+        request.serverId || getRequestServerId(req)
+      ));
 
       if (player) {
 
@@ -2798,6 +2978,7 @@ app.post("/api/complete-buy", async (req, res) => {
         await player.save();
 
         io.emit("balanceUpdate", {
+          serverId: player.serverId || request.serverId || "main",
           name: player.name,
           balance: player.balance
         });
