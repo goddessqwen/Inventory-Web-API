@@ -1482,7 +1482,17 @@ app.get("/api/players", async (req, res) => {
   try {
 
     const serverId = getRequestServerId(req);
-    const players = await Player.find({ serverId }).sort({ name: 1 });
+    const playerFilter = serverId === "main"
+      ? {
+          $or: [
+            { serverId: "main" },
+            { serverId: { $exists: false } },
+            { serverId: "" },
+            { serverId: null }
+          ]
+        }
+      : { serverId };
+    const players = await Player.find(playerFilter).sort({ name: 1 });
 
     res.json(players.map(player => ({
       serverId: player.serverId || "main",
