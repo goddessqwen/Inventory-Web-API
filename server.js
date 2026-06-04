@@ -180,6 +180,34 @@ const siteSettingSchema = new mongoose.Schema({
   }
 });
 
+const talentApplicationSchema = new mongoose.Schema({
+  applicant_name: String,
+  email: String,
+  stage_name: String,
+  age: Number,
+  country: String,
+  content_type: String,
+  experience: String,
+  portfolio_url: String,
+  has_avatar: {
+    type: Boolean,
+    default: false
+  },
+  tech_setup: String,
+  motivation: String,
+  availability_hours: Number,
+  status: {
+    type: String,
+    default: "pending"
+  },
+  admin_notes: {
+    type: String,
+    default: ""
+  }
+}, {
+  timestamps: true
+});
+
 /*
 ========================
 MODELS
@@ -196,6 +224,7 @@ const TwitchGateLink = mongoose.model("TwitchGateLink", twitchGateLinkSchema);
 const ShopItem = mongoose.model("ShopItem", shopItemSchema);
 const SellPrice = mongoose.model("SellPrice", sellPriceSchema);
 const SiteSetting = mongoose.model("SiteSetting", siteSettingSchema);
+const TalentApplication = mongoose.model("TalentApplication", talentApplicationSchema);
 
 const SERVER_API_KEY = process.env.SERVER_API_KEY || "mySecret123456789";
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
@@ -446,6 +475,186 @@ app.get("/api/health", (req, res) => {
     service: "InventoryWebAPI",
     twitchGate: true
   });
+});
+
+/*
+========================
+TALENT APPLICATIONS
+========================
+*/
+
+function formatTalentApplication(application) {
+
+  const data = application.toObject ? application.toObject() : application;
+
+  return {
+    ...data,
+    id: String(data._id),
+    created_date: data.createdAt,
+    updated_date: data.updatedAt
+  };
+}
+
+function getTalentApplicationSort(sort = "-created_date") {
+
+  const cleanSort = String(sort || "-created_date").trim();
+  const direction = cleanSort.startsWith("-") ? -1 : 1;
+  const field = cleanSort.replace(/^-/, "");
+
+  if (field === "created_date") return { createdAt: direction };
+  if (field === "updated_date") return { updatedAt: direction };
+  if (field === "applicant_name") return { applicant_name: direction };
+  if (field === "email") return { email: direction };
+  if (field === "status") return { status: direction };
+
+  return { createdAt: -1 };
+}
+
+app.post("/api/applications", async (req, res) => {
+
+  try {
+
+    const applicantName = String(req.body.applicant_name || "").trim();
+    const email = String(req.body.email || "").trim().toLowerCase();
+
+    if (!applicantName || !email) {
+
+      return res.status(400).json({
+        success: false,
+        error: "Missing applicant name or email"
+      });
+    }
+
+    const application = new TalentApplication({
+      applicant_name: applicantName,
+      email,
+      stage_name: String(req.body.stage_name || "").trim(),
+      age: req.body.age === undefined || req.body.age === "" ? undefined : Number(req.body.age),
+      country: String(req.body.country || "").trim(),
+      content_type: String(req.body.content_type || "").trim(),
+      experience: String(req.body.experience || "").trim(),
+      portfolio_url: String(req.body.portfolio_url || "").trim(),
+      has_avatar: req.body.has_avatar === true,
+      tech_setup: String(req.body.tech_setup || "").trim(),
+      motivation: String(req.body.motivation || "").trim(),
+      availability_hours:
+        req.body.availability_hours === undefined || req.body.availability_hours === ""
+          ? undefined
+          : Number(req.body.availability_hours),
+      status: String(req.body.status || "pending").trim().toLowerCase() || "pending"
+    });
+
+    await application.save();
+
+    io.emit("applicationsUpdated");
+
+    res.json({
+      success: true,
+      application: formatTalentApplication(application)
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: "Could not submit application"
+    });
+  }
+});
+
+app.get("/api/applications", async (req, res) => {
+
+  try {
+
+    const limit = Math.min(Number(req.query.limit) || 100, 250);
+    const email = String(req.query.email || "").trim().toLowerCase();
+    const filter = email ? { email } : {};
+
+    const applications = await TalentApplication.find(filter)
+      .sort(getTalentApplicationSort(req.query.sort))
+      .limit(limit);
+
+    res.json(applications.map(formatTalentApplication));
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: "Could not load applications"
+    });
+  }
+});
+
+app.patch("/api/applications/:id", async (req, res) => {
+
+  try {
+
+    const allowedFields = [
+      "applicant_name",
+      "email",
+      "stage_name",
+      "age",
+      "country",
+      "content_type",
+      "experience",
+      "portfolio_url",
+      "has_avatar",
+      "tech_setup",
+      "motivation",
+      "availability_hours",
+      "status",
+      "admin_notes"
+    ];
+    const update = {};
+
+    for (const field of allowedFields) {
+      if (req.body[field] !== undefined) {
+        update[field] = req.body[field];
+      }
+    }
+
+    if (update.email) {
+      update.email = String(update.email).trim().toLowerCase();
+    }
+
+    if (update.status) {
+      update.status = String(update.status).trim().toLowerCase();
+    }
+
+    const application = await TalentApplication.findByIdAndUpdate(
+      req.params.id,
+      update,
+      { new: true }
+    );
+
+    if (!application) {
+
+      return res.status(404).json({
+        success: false,
+        error: "Application not found"
+      });
+    }
+
+    io.emit("applicationsUpdated");
+
+    res.json({
+      success: true,
+      application: formatTalentApplication(application)
+    });
+
+  } catch (err) {
+
+    console.error(err);
+
+    res.status(500).json({
+      success: false,
+      error: "Could not update application"
+    });
+  }
 });
 
 /*
