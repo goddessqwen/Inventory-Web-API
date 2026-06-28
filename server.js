@@ -453,7 +453,12 @@ function isSiteAdminRequest(req) {
   return email === OWNER_EMAIL || role === "admin";
 }
 
+function isTrustedServerRequest(req) {
+  return String(req.headers["x-api-key"] || "") === SERVER_API_KEY;
+}
+
 async function hasShopAdminAccess(req, serverId = getRequestServerId(req)) {
+  if (isTrustedServerRequest(req)) return true;
   if (isSiteAdminRequest(req)) return true;
 
   const email = getRequestUserEmail(req);
