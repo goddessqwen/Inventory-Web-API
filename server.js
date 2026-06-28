@@ -152,6 +152,11 @@ const twitchGateLinkSchema = new mongoose.Schema({
 });
 
 const shopItemSchema = new mongoose.Schema({
+  serverId: {
+    type: String,
+    default: "main",
+    index: true
+  },
   itemType: String,
   aliases: {
     type: [String],
@@ -434,6 +439,23 @@ function getPlayerServerFilter(name, serverId) {
   }
 
   return filter;
+}
+
+function getShopServerFilter(serverId) {
+  const cleanServerId = normalizeServerId(serverId);
+
+  if (cleanServerId === "main") {
+    return {
+      $or: [
+        { serverId: "main" },
+        { serverId: { $exists: false } },
+        { serverId: "" },
+        { serverId: null }
+      ]
+    };
+  }
+
+  return { serverId: cleanServerId };
 }
 
 async function upsertMinecraftServer({ serverId, name, address } = {}) {
@@ -2319,8 +2341,10 @@ SHOP ROUTES
 */
 
 app.get("/api/shop", async (req, res) => {
+  const serverId = getRequestServerId(req);
 
   const items = await ShopItem.find({
+    ...getShopServerFilter(serverId),
     enabled: true
   }).sort({ category: 1, displayName: 1, itemType: 1 });
 
@@ -2328,8 +2352,9 @@ app.get("/api/shop", async (req, res) => {
 });
 
 app.get("/api/admin/shop", async (req, res) => {
+  const serverId = getRequestServerId(req);
 
-  const items = await ShopItem.find().sort({ category: 1, displayName: 1, itemType: 1 });
+  const items = await ShopItem.find(getShopServerFilter(serverId)).sort({ category: 1, displayName: 1, itemType: 1 });
 
   res.json(items);
 });
@@ -2339,6 +2364,7 @@ app.post("/api/admin/shop", async (req, res) => {
   try {
 
     const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
+    const serverId = getRequestServerId(req);
     const category = String(req.body.category || "misc").trim().toLowerCase();
 
     if (!itemType || price === undefined) {
@@ -2350,6 +2376,7 @@ app.post("/api/admin/shop", async (req, res) => {
     }
 
     const item = new ShopItem({
+      serverId,
       itemType: itemType,
       category: category || "misc",
       displayName: displayName || "",
@@ -2361,7 +2388,7 @@ app.post("/api/admin/shop", async (req, res) => {
 
     await item.save();
 
-    io.emit("shopUpdated");
+    io.emit("shopUpdated", { serverId });
 
     res.json({
       success: true,
@@ -2383,6 +2410,7 @@ app.post("/api/admin/shop/upsert", async (req, res) => {
   try {
 
     const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
+    const serverId = getRequestServerId(req);
     const category = String(req.body.category || "misc").trim().toLowerCase();
     const cleanType = String(itemType || "").trim();
     const aliases = Array.isArray(req.body.aliases)
@@ -2398,8 +2426,9 @@ app.post("/api/admin/shop/upsert", async (req, res) => {
     }
 
     const item = await ShopItem.findOneAndUpdate(
-      { itemType: cleanType },
+      { serverId, itemType: cleanType },
       {
+        serverId,
         itemType: cleanType,
         aliases: [...new Set([cleanType, ...aliases])],
         category: category || "misc",
@@ -2415,7 +2444,7 @@ app.post("/api/admin/shop/upsert", async (req, res) => {
       }
     );
 
-    io.emit("shopUpdated");
+    io.emit("shopUpdated", { serverId });
 
     res.json({
       success: true,
@@ -2438,11 +2467,13 @@ app.put("/api/admin/shop/:id", async (req, res) => {
   try {
 
     const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
+    const serverId = getRequestServerId(req);
     const category = String(req.body.category || "misc").trim().toLowerCase();
 
     const item = await ShopItem.findByIdAndUpdate(
       req.params.id,
       {
+        serverId,
         itemType: itemType,
         category: category || "misc",
         displayName: displayName || "",
@@ -2454,7 +2485,7 @@ app.put("/api/admin/shop/:id", async (req, res) => {
       { new: true }
     );
 
-    io.emit("shopUpdated");
+    io.emit("shopUpdated", { serverId });
 
     res.json({
       success: true,
@@ -2472,10 +2503,11 @@ app.put("/api/admin/shop/:id", async (req, res) => {
 });
 
 app.delete("/api/admin/shop/:id", async (req, res) => {
+  const serverId = getRequestServerId(req);
 
   await ShopItem.findByIdAndDelete(req.params.id);
 
-  io.emit("shopUpdated");
+  io.emit("shopUpdated", { serverId });
 
   res.json({
     success: true
@@ -2486,6 +2518,7 @@ app.delete("/api/admin/shop/by-type/:itemType", async (req, res) => {
 
   try {
 
+    const serverId = getRequestServerId(req);
     const cleanType = String(req.params.itemType || "").trim();
 
     if (!cleanType) {
@@ -2496,13 +2529,14 @@ app.delete("/api/admin/shop/by-type/:itemType", async (req, res) => {
     }
 
     const result = await ShopItem.deleteMany({
+      serverId,
       $or: [
         { itemType: cleanType },
         { aliases: cleanType }
       ]
     });
 
-    io.emit("shopUpdated");
+    io.emit("shopUpdated", { serverId });
 
     res.json({
       success: true,
@@ -2849,6 +2883,7 @@ app.post("/api/buy", async (req, res) => {
     const buyAmount = Number(amount);
 
     const shopItem = await ShopItem.findOne({
+      ...getShopServerFilter(serverId),
       enabled: true,
       $or: [
         { itemType: cleanItemType },
