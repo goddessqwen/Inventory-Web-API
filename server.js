@@ -197,6 +197,20 @@ const siteSettingSchema = new mongoose.Schema({
   }
 });
 
+const shopAdminAccessSchema = new mongoose.Schema({
+  email: {
+    type: String,
+    index: true
+  },
+  serverId: {
+    type: String,
+    index: true
+  },
+  grantedBy: String
+}, {
+  timestamps: true
+});
+
 const minecraftServerSchema = new mongoose.Schema({
   serverId: {
     type: String,
@@ -284,6 +298,7 @@ const PendingSell = mongoose.model("PendingSell", pendingSellSchema);
 const PendingBuy = mongoose.model("PendingBuy", pendingBuySchema);
 const TwitchGateLink = mongoose.model("TwitchGateLink", twitchGateLinkSchema);
 const ShopItem = mongoose.model("ShopItem", shopItemSchema);
+const ShopAdminAccess = mongoose.model("ShopAdminAccess", shopAdminAccessSchema);
 const SellPrice = mongoose.model("SellPrice", sellPriceSchema);
 const SiteSetting = mongoose.model("SiteSetting", siteSettingSchema);
 const MinecraftServer = mongoose.model("MinecraftServer", minecraftServerSchema);
@@ -303,6 +318,7 @@ const PUBLIC_API_URL =
 const WEBSITE_URL =
   process.env.WEBSITE_URL ||
   "https://vfusions.com/minecraft";
+const OWNER_EMAIL = "carly.wright590@gmail.com";
 
 /*
 ========================
@@ -421,6 +437,49 @@ function normalizeServerId(serverId) {
 
 function getRequestServerId(req) {
   return normalizeServerId(req.body?.serverId || req.query?.serverId || req.headers["x-server-id"]);
+}
+
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function getRequestUserEmail(req) {
+  return normalizeEmail(req.headers["x-user-email"] || req.body?.userEmail || req.query?.userEmail);
+}
+
+function isSiteAdminRequest(req) {
+  const email = getRequestUserEmail(req);
+  const role = String(req.headers["x-user-role"] || req.body?.userRole || req.query?.userRole || "").trim().toLowerCase();
+  return email === OWNER_EMAIL || role === "admin";
+}
+
+async function hasShopAdminAccess(req, serverId = getRequestServerId(req)) {
+  if (isSiteAdminRequest(req)) return true;
+
+  const email = getRequestUserEmail(req);
+  if (!email) return false;
+
+  const access = await ShopAdminAccess.findOne({
+    email,
+    serverId: normalizeServerId(serverId)
+  });
+
+  return !!access;
+}
+
+async function requireShopAdminAccess(req, res) {
+  const serverId = getRequestServerId(req);
+
+  if (await hasShopAdminAccess(req, serverId)) {
+    return { ok: true, serverId };
+  }
+
+  res.status(403).json({
+    success: false,
+    error: "You do not have access to edit this server shop"
+  });
+
+  return { ok: false, serverId };
 }
 
 function getPlayerServerFilter(name, serverId) {
@@ -2352,11 +2411,85 @@ app.get("/api/shop", async (req, res) => {
 });
 
 app.get("/api/admin/shop", async (req, res) => {
-  const serverId = getRequestServerId(req);
+  const access = await requireShopAdminAccess(req, res);
+  if (!access.ok) return;
+  const { serverId } = access;
 
   const items = await ShopItem.find(getShopServerFilter(serverId)).sort({ category: 1, displayName: 1, itemType: 1 });
 
   res.json(items);
+});
+
+app.get("/api/admin/shop-access", async (req, res) => {
+  if (!isSiteAdminRequest(req)) {
+    return res.status(403).json({
+      success: false,
+      error: "Only site admins can view shop access"
+    });
+  }
+
+  const access = await ShopAdminAccess.find().sort({ email: 1, serverId: 1 });
+  res.json(access);
+});
+
+app.post("/api/admin/shop-access", async (req, res) => {
+  if (!isSiteAdminRequest(req)) {
+    return res.status(403).json({
+      success: false,
+      error: "Only site admins can grant shop access"
+    });
+  }
+
+  const email = normalizeEmail(req.body?.email);
+  const serverId = normalizeServerId(req.body?.serverId);
+
+  if (!email || !serverId) {
+    return res.status(400).json({
+      success: false,
+      error: "Missing email or serverId"
+    });
+  }
+
+  const access = await ShopAdminAccess.findOneAndUpdate(
+    { email, serverId },
+    {
+      email,
+      serverId,
+      grantedBy: getRequestUserEmail(req)
+    },
+    { new: true, upsert: true }
+  );
+
+  res.json({
+    success: true,
+    access
+  });
+});
+
+app.delete("/api/admin/shop-access", async (req, res) => {
+  if (!isSiteAdminRequest(req)) {
+    return res.status(403).json({
+      success: false,
+      error: "Only site admins can revoke shop access"
+    });
+  }
+
+  const email = normalizeEmail(req.body?.email || req.query?.email);
+  const serverId = normalizeServerId(req.body?.serverId || req.query?.serverId);
+
+  if (!email || !serverId) {
+    return res.status(400).json({
+      success: false,
+      error: "Missing email or serverId"
+    });
+  }
+
+  const result = await ShopAdminAccess.deleteMany({ email, serverId });
+
+  res.json({
+    success: true,
+    deletedCount: result.deletedCount
+  });
 });
 
 app.post("/api/admin/shop", async (req, res) => {
@@ -2364,7 +2497,9 @@ app.post("/api/admin/shop", async (req, res) => {
   try {
 
     const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
-    const serverId = getRequestServerId(req);
+    const access = await requireShopAdminAccess(req, res);
+    if (!access.ok) return;
+    const { serverId } = access;
     const category = String(req.body.category || "misc").trim().toLowerCase();
 
     if (!itemType || price === undefined) {
@@ -2410,7 +2545,9 @@ app.post("/api/admin/shop/upsert", async (req, res) => {
   try {
 
     const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
-    const serverId = getRequestServerId(req);
+    const access = await requireShopAdminAccess(req, res);
+    if (!access.ok) return;
+    const { serverId } = access;
     const category = String(req.body.category || "misc").trim().toLowerCase();
     const cleanType = String(itemType || "").trim();
     const aliases = Array.isArray(req.body.aliases)
@@ -2467,7 +2604,9 @@ app.put("/api/admin/shop/:id", async (req, res) => {
   try {
 
     const { itemType, price, displayName, imageUrl, iconUrl, enabled } = req.body;
-    const serverId = getRequestServerId(req);
+    const access = await requireShopAdminAccess(req, res);
+    if (!access.ok) return;
+    const { serverId } = access;
     const category = String(req.body.category || "misc").trim().toLowerCase();
 
     const item = await ShopItem.findByIdAndUpdate(
@@ -2503,7 +2642,9 @@ app.put("/api/admin/shop/:id", async (req, res) => {
 });
 
 app.delete("/api/admin/shop/:id", async (req, res) => {
-  const serverId = getRequestServerId(req);
+  const access = await requireShopAdminAccess(req, res);
+  if (!access.ok) return;
+  const { serverId } = access;
 
   await ShopItem.findByIdAndDelete(req.params.id);
 
@@ -2518,7 +2659,9 @@ app.delete("/api/admin/shop/by-type/:itemType", async (req, res) => {
 
   try {
 
-    const serverId = getRequestServerId(req);
+    const access = await requireShopAdminAccess(req, res);
+    if (!access.ok) return;
+    const { serverId } = access;
     const cleanType = String(req.params.itemType || "").trim();
 
     if (!cleanType) {
